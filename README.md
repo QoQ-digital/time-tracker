@@ -136,6 +136,8 @@ Expected:
 * The bot writes one slot to `time_slots` (status `confirmed`).
 * The bot sends a dashboard message.
 * In `time_dashboard_messages`, the chat now has a stored message id.
+* This message takes the **fast path**: explicit time range + `[CODE]` is
+  parsed in JS and goes straight to the DB. No AI call is made.
 
 Send another message:
 
@@ -144,6 +146,7 @@ Send another message:
 ```
 
 Expected:
+* No explicit `[CODE]`, so the AI classifier runs (via Anthropic).
 * AI assigns the `TELEGRAM` category (or similar).
 * `start_time` is the `end_time` of the previous slot.
 * Old dashboard is deleted; a new one is sent.

@@ -70,38 +70,92 @@ You also need to create out-of-band:
    the easiest way is to message [@userinfobot](https://t.me/userinfobot)
    from your account.
 
-## Quick deploy
+## Deploy (GitHub Actions, recommended)
+
+The repo ships a manual-trigger GitHub Actions workflow
+([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)) that does
+the whole deploy from secrets — no SSH credentials live in chat or in
+your shell history.
+
+### One-time setup
+
+**1. On the deploy target (qoq-dev), create an SSH key for GHA and
+generate the random secrets:**
 
 ```bash
-# 1. clone / scp the project to the server
-scp -r ./schedule/ user@qoq-dev.xyz:/opt/tetris-time-tracker
-ssh user@qoq-dev.xyz
-cd /opt/tetris-time-tracker
+# As root on the server. Outputs every value you need to paste into GH.
+curl -sS https://raw.githubusercontent.com/QoQ-digital/time-tracker/main/scripts/bootstrap-github-deploy.sh \
+  | bash -s -- --add-authorized
+```
 
-# 2. fill in secrets
-cp .env.example .env
-# generate strong values for:
-#   POSTGRES_PASSWORD                 -> openssl rand -hex 24
-#   N8N_ENCRYPTION_KEY                -> openssl rand -hex 32
-#   N8N_USER_MANAGEMENT_JWT_SECRET    -> openssl rand -hex 32
-# generate a fresh path suffix (and update N8N_PATH / WEBHOOK_URL /
-#   N8N_EDITOR_BASE_URL accordingly):
-openssl rand -hex 4
+(Or if the repo isn't on the server yet, copy
+[`scripts/bootstrap-github-deploy.sh`](scripts/bootstrap-github-deploy.sh)
+manually and run it with `--add-authorized`.)
 
-# 3. wire nginx
-sudo cp nginx/tetris-time-tracker.conf /etc/nginx/snippets/   # optional
-# Open the existing /etc/nginx/sites-available/qoq-dev.xyz (or wherever your
-# server block lives), paste the `location /tetris-n8n-<suffix>/ { ... }`
-# block from nginx/tetris-time-tracker.conf INSIDE the existing
-# `server { ... }` for qoq-dev.xyz, then:
-sudo nginx -t && sudo systemctl reload nginx
+**2. Paste the printed values into GitHub:**
+Repo → Settings → Secrets and variables → Actions → **New repository
+secret**. The required keys are:
 
-# 4. start the stack
-./scripts/deploy.sh
+| Secret | Source |
+|---|---|
+| `DEPLOY_SSH_KEY`                   | full contents of `/tmp/tetris_deploy_key` |
+| `DEPLOY_SSH_HOST`                  | e.g. `188.34.205.181` or `qoq-dev.xyz` |
+| `DEPLOY_SSH_USER`                  | e.g. `root` |
+| `POSTGRES_PASSWORD`                | from the bootstrap script |
+| `N8N_ENCRYPTION_KEY`               | from the bootstrap script |
+| `N8N_USER_MANAGEMENT_JWT_SECRET`   | from the bootstrap script |
+| `N8N_PATH_SUFFIX`                  | from the bootstrap script |
+| `TELEGRAM_BOT_TOKEN`               | from [@BotFather](https://t.me/BotFather) |
+| `AI_API_KEY`                       | from <https://console.anthropic.com> |
+| `AUTHORIZED_TELEGRAM_USER_IDS`     | numeric Telegram user_id (from [@userinfobot](https://t.me/userinfobot)) |
+| `AUTHORIZED_TELEGRAM_CHAT_IDS`     | optional, numeric chat_id |
 
-# 5. verify
+After pasting `DEPLOY_SSH_KEY`, **delete the local file**:
+
+```bash
+shred -u /tmp/tetris_deploy_key /tmp/tetris_deploy_key.pub
+```
+
+**3. Trigger the workflow:**
+GitHub repo → Actions → "Deploy to qoq-dev" → **Run workflow** → `main`.
+
+The first run will:
+* `git clone` this repo into `/opt/time-tracker` on the server.
+* Write `.env` from the secrets.
+* `docker compose up -d`.
+* Print the editor URL **and the exact nginx `location` block** to
+  paste into your existing qoq-dev.xyz server config.
+
+**4. Add the printed nginx snippet** inside your existing
+`server { ... }` for qoq-dev.xyz, then `sudo nginx -t && sudo systemctl
+reload nginx`. This is the only step the workflow can't do safely —
+your existing nginx config is shared with other apps and we don't
+auto-edit it.
+
+**5. Verify:**
+
+```bash
 curl -sS -o /dev/null -w "%{http_code}\n" https://qoq-dev.xyz/tetris-n8n-<suffix>/
 # expect 200 or 401 (n8n auth screen) — NOT 404.
+```
+
+### Subsequent deploys
+
+Just trigger the workflow again. It pulls main, takes a DB backup
+(unless you tick "skip backup"), and rolls forward.
+
+## Manual deploy (fallback)
+
+If you need to deploy without GitHub Actions (SSH outage, or initial
+debugging):
+
+```bash
+# On the server.
+git clone https://github.com/QoQ-digital/time-tracker.git /opt/time-tracker
+cd /opt/time-tracker
+cp .env.example .env
+# Fill in .env by hand (generate the random secrets with `openssl rand -hex …`)
+./scripts/deploy.sh
 ```
 
 ## First-time n8n setup

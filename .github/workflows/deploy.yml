@@ -1,0 +1,205 @@
+name: Deploy to qoq-dev
+
+# Manual-trigger only on purpose: this is a single-server PoC and we
+# don't want every push to main to redeploy. Promote to push triggers
+# once you trust the workflow end-to-end.
+on:
+  workflow_dispatch:
+    inputs:
+      skip_backup:
+        description: "Skip pre-deploy DB backup (faster, but riskier)"
+        type: boolean
+        default: false
+
+# One deploy at a time; queue subsequent runs instead of running them
+# concurrently against the same server.
+concurrency:
+  group: deploy-qoq-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: qoq-dev   # makes secrets scope-limited if you set up the env
+
+    steps:
+      - name: Validate required secrets
+        env:
+          # Mapping all required secrets in here so the bash check below
+          # can see them as env vars by name.
+          DEPLOY_SSH_KEY:                 ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST:                ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER:                ${{ secrets.DEPLOY_SSH_USER }}
+          POSTGRES_PASSWORD:              ${{ secrets.POSTGRES_PASSWORD }}
+          N8N_ENCRYPTION_KEY:             ${{ secrets.N8N_ENCRYPTION_KEY }}
+          N8N_USER_MANAGEMENT_JWT_SECRET: ${{ secrets.N8N_USER_MANAGEMENT_JWT_SECRET }}
+          N8N_PATH_SUFFIX:                ${{ secrets.N8N_PATH_SUFFIX }}
+          TELEGRAM_BOT_TOKEN:             ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          AI_API_KEY:                     ${{ secrets.AI_API_KEY }}
+          AUTHORIZED_TELEGRAM_USER_IDS:   ${{ secrets.AUTHORIZED_TELEGRAM_USER_IDS }}
+        run: |
+          missing=()
+          for v in DEPLOY_SSH_KEY DEPLOY_SSH_HOST DEPLOY_SSH_USER \
+                   POSTGRES_PASSWORD N8N_ENCRYPTION_KEY \
+                   N8N_USER_MANAGEMENT_JWT_SECRET N8N_PATH_SUFFIX \
+                   TELEGRAM_BOT_TOKEN AI_API_KEY \
+                   AUTHORIZED_TELEGRAM_USER_IDS; do
+            # Indirect expansion: ${!v} = value of env var named ${v}.
+            if [ -z "${!v:-}" ]; then
+              missing+=("$v")
+            fi
+          done
+          if [ "${N8N_PATH_SUFFIX:-}" = "7f3a9c2b" ]; then
+            echo "::error::N8N_PATH_SUFFIX is still the placeholder from .env.example."
+            echo "::error::Generate a fresh one: 'openssl rand -hex 4', then update the secret."
+            exit 1
+          fi
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Missing secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # All later ssh/scp invocations use this key automatically.
+          cat >> ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName $SSH_HOST
+            User ${{ secrets.DEPLOY_SSH_USER }}
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Build .env locally
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          N8N_ENCRYPTION_KEY: ${{ secrets.N8N_ENCRYPTION_KEY }}
+          N8N_USER_MANAGEMENT_JWT_SECRET: ${{ secrets.N8N_USER_MANAGEMENT_JWT_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          AI_API_KEY: ${{ secrets.AI_API_KEY }}
+          AUTHORIZED_TELEGRAM_USER_IDS: ${{ secrets.AUTHORIZED_TELEGRAM_USER_IDS }}
+          AUTHORIZED_TELEGRAM_CHAT_IDS: ${{ secrets.AUTHORIZED_TELEGRAM_CHAT_IDS }}
+          N8N_PATH_SUFFIX: ${{ secrets.N8N_PATH_SUFFIX }}
+        run: |
+          umask 077
+          # Build the file in a way that does NOT echo secrets to logs.
+          # GitHub auto-masks secret values in logs anyway, but `set -x` here
+          # would print quoted strings of literal '***', so we keep it off.
+          {
+            echo "POSTGRES_DB=time_tracker"
+            echo "POSTGRES_USER=time_tracker_app"
+            echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
+            echo "N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}"
+            echo "N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET}"
+            echo "N8N_HOST=qoq-dev.xyz"
+            echo "N8N_PROTOCOL=https"
+            echo "N8N_PORT=5678"
+            echo "N8N_PATH=/tetris-n8n-${N8N_PATH_SUFFIX}/"
+            echo "WEBHOOK_URL=https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/"
+            echo "N8N_EDITOR_BASE_URL=https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/"
+            echo "GENERIC_TIMEZONE=Europe/Warsaw"
+            echo "TZ=Europe/Warsaw"
+            echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
+            echo "AI_API_KEY=${AI_API_KEY}"
+            echo "AI_MODEL=claude-haiku-4-5-20251001"
+            echo "AI_API_URL=https://api.anthropic.com/v1/messages"
+            echo "AI_CONFIDENCE_THRESHOLD=0.80"
+            echo "AUTHORIZED_TELEGRAM_USER_IDS=${AUTHORIZED_TELEGRAM_USER_IDS}"
+            echo "AUTHORIZED_TELEGRAM_CHAT_IDS=${AUTHORIZED_TELEGRAM_CHAT_IDS}"
+            echo "MAX_ACTIVE_EXAMPLES_PER_CATEGORY=30"
+            echo "DASHBOARD_DEFAULT_MODE=compact"
+            echo "DASHBOARD_MAX_CATEGORIES=8"
+          } > /tmp/time-tracker.env
+
+      - name: Upload .env to server
+        run: |
+          scp /tmp/time-tracker.env deploy-target:/tmp/time-tracker.env.new
+          shred -u /tmp/time-tracker.env
+
+      - name: Deploy on server
+        env:
+          SKIP_BACKUP: ${{ inputs.skip_backup }}
+          N8N_PATH_SUFFIX: ${{ secrets.N8N_PATH_SUFFIX }}
+        run: |
+          # The remote heredoc is single-quoted so the only thing the host
+          # shell substitutes is what we explicitly export below.
+          ssh deploy-target \
+              "SKIP_BACKUP='${SKIP_BACKUP}' N8N_PATH_SUFFIX='${N8N_PATH_SUFFIX}' bash -se" <<'REMOTE'
+          set -euo pipefail
+
+          DEPLOY_DIR=/opt/time-tracker
+          REPO=https://github.com/QoQ-digital/time-tracker.git
+          mkdir -p "$(dirname "$DEPLOY_DIR")"
+
+          if [ ! -d "$DEPLOY_DIR/.git" ]; then
+            echo "[deploy] First-time clone into $DEPLOY_DIR"
+            git clone --depth=1 "$REPO" "$DEPLOY_DIR"
+          else
+            echo "[deploy] Updating existing checkout"
+            cd "$DEPLOY_DIR"
+            git fetch --depth=1 origin main
+            git reset --hard origin/main
+          fi
+
+          cd "$DEPLOY_DIR"
+          install -m 600 /tmp/time-tracker.env.new .env
+          rm -f /tmp/time-tracker.env.new
+
+          if [ "$SKIP_BACKUP" != "true" ] \
+             && docker compose ps --status running --services 2>/dev/null | grep -qx postgres; then
+            echo "[deploy] Pre-deploy DB backup"
+            ./scripts/backup.sh || echo "[deploy] backup failed (non-fatal, continuing)"
+          fi
+
+          echo "[deploy] Pulling images"
+          docker compose pull
+
+          echo "[deploy] Bringing up the stack"
+          docker compose up -d --remove-orphans
+
+          # Give postgres a moment to settle so the next compose ps is meaningful.
+          sleep 3
+          docker compose ps
+
+          echo
+          echo "================================================================"
+          echo " Deploy complete."
+          echo " Editor:  https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/"
+          echo " Webhook: https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/webhook/"
+          echo "================================================================"
+          echo
+          echo " If this is the FIRST deploy, paste this nginx location block"
+          echo " inside your existing qoq-dev.xyz server { ... } and reload nginx:"
+          echo
+          cat <<NGINX
+          location /tetris-n8n-${N8N_PATH_SUFFIX}/ {
+              proxy_pass http://127.0.0.1:5678;
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade           \$http_upgrade;
+              proxy_set_header Connection        "upgrade";
+              proxy_set_header Host              \$host;
+              proxy_set_header X-Real-IP         \$remote_addr;
+              proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto \$scheme;
+              proxy_set_header X-Forwarded-Host  \$host;
+              proxy_buffering        off;
+              proxy_cache            off;
+              proxy_read_timeout     86400;
+              proxy_send_timeout     86400;
+              chunked_transfer_encoding off;
+              client_max_body_size   50M;
+          }
+          NGINX
+          REMOTE

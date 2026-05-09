@@ -1,0 +1,510 @@
+{
+  "name": "Tetris Time Tracker Main",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message",
+          "edited_message"
+        ],
+        "additionalFields": {}
+      },
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [-1600, 0],
+      "credentials": {
+        "telegramApi": {
+          "name": "Tetris Telegram Bot"
+        }
+      },
+      "webhookId": "tetris-telegram-trigger"
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// 01: parse the Telegram update, run authorization, decide top-level action.\n// Outputs ONE item with normalized fields and a chosen `action` value:\n//   denied | send_text | render_dashboard | ai_classify | todo\n//\n// For PoC v1 the AI is responsible for full parsing (time + category +\n// multi-slot detection). A future optimization is a JS pre-parser that\n// short-circuits explicit `[CODE]` + range messages without calling AI.\n\nconst raw = $input.first().json;\nconst msg = raw.message || raw.edited_message;\nif (!msg) {\n  return [];\n}\n\nconst isEdit = !!raw.edited_message;\nconst chatId = String(msg.chat.id);\nconst userId = String(msg.from.id);\nconst messageId = String(msg.message_id);\nconst text = (msg.text || '').trim();\n\n// Local date in the workflow timezone (set via TZ on the n8n container).\nconst nowLocal = new Date(\n  new Date().toLocaleString('en-US', { timeZone: $env.GENERIC_TIMEZONE || 'Europe/Warsaw' })\n);\nconst y = nowLocal.getFullYear();\nconst m = String(nowLocal.getMonth() + 1).padStart(2, '0');\nconst d = String(nowLocal.getDate()).padStart(2, '0');\nconst todayDate = `${y}-${m}-${d}`;\n\n// --- Authorization ---\nconst allowedUsers = ($env.AUTHORIZED_TELEGRAM_USER_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nconst allowedChats = ($env.AUTHORIZED_TELEGRAM_CHAT_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nconst hasAllowlist = allowedUsers.length > 0 || allowedChats.length > 0;\nconst authorized = hasAllowlist\n  && (allowedUsers.includes(userId) || allowedChats.includes(chatId));\n\nconst base = {\n  chatId, userId, messageId, text, isEdit, todayDate,\n  authorized,\n};\n\nif (!authorized) {\n  return [{ json: { ...base, action: 'denied', replyText: 'Access denied.' } }];\n}\n\n// --- Command detection ---\nif (text.startsWith('/')) {\n  const parts = text.split(/\\s+/);\n  const cmd = parts[0].split('@')[0].toLowerCase();\n  const args = text.slice(parts[0].length).trim();\n\n  if (cmd === '/help') {\n    return [{ json: { ...base, action: 'send_text', replyText:\n`Tetris Time Tracker\n\nFormats:\n  0855-0955 [FRIENDS] разговор с другом\n  1300-1400 интервью\n  20 мин отвечал в Telegram\n\nCommands:\n  /dashboard         show current dashboard\n  /today /week       compact day/week view\n  /categories        list categories\n  /category_add CODE | Name | Description\n  /goal_week CODE | hours\n  /goal_day CODE | hours\n  /delete_last       delete last entry\n  /edit_last <text>  replace last entry\n  /dashboard_compact /dashboard_full\n  /help              this message`,\n    } }];\n  }\n\n  if (cmd === '/dashboard' || cmd === '/today' || cmd === '/week') {\n    return [{ json: { ...base, action: 'render_dashboard', dashboardScope: cmd.slice(1) } }];\n  }\n\n  // All other commands: route to TODO so they get a clear reply for now.\n  return [{ json: { ...base, action: 'todo',\n    replyText: `Command ${cmd} is recognized but not wired up in this workflow yet. See README \"Next steps\".` } }];\n}\n\n// --- Pending clarification reply (single digit or [CODE]) ---\n// We do the actual lookup later in SQL, but mark intent here.\nif (/^[1-9]$/.test(text) || /^\\[[A-Z_][A-Z0-9_]*\\]$/.test(text)) {\n  return [{ json: { ...base, action: 'todo',\n    replyText: 'Pending-clarification resolution is not wired up in this workflow yet.' } }];\n}\n\n// Default: hand to the AI classifier.\nreturn [{ json: { ...base, action: 'ai_classify' } }];"
+      },
+      "name": "01 Parse + Authorize + Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1380, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{$json.authorized}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "02 Is Authorized?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-1160, 0]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.replyText}}",
+        "additionalFields": {}
+      },
+      "name": "02b Send Access Denied",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-940, 200],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "send_text",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "send_text"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "todo",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "todo"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "render_dashboard",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "render_dashboard"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "ai_classify",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "ai_classify"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "none" }
+      },
+      "name": "03 Action Switch",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [-940, -100]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.replyText}}",
+        "additionalFields": {}
+      },
+      "name": "04a Send Static Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-720, -300],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.replyText}}",
+        "additionalFields": {}
+      },
+      "name": "04b Send TODO Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-720, -160],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT code, name, description\nFROM time_categories\nWHERE is_active = TRUE\nORDER BY code;",
+        "options": {}
+      },
+      "name": "05 Load Categories",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-720, 100],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT category_code, example_text\nFROM time_category_examples\nWHERE is_active = TRUE\nORDER BY category_code, id;",
+        "options": {}
+      },
+      "name": "06 Load Examples",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-500, 100],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build the Anthropic Messages API request body.\n// Pulls: original message context (from the planner node),\n//        active categories (Load Categories), and\n//        active examples (Load Examples).\n\nconst ctx = $('01 Parse + Authorize + Plan').first().json;\nconst categories = $('05 Load Categories').all().map(i => i.json);\nconst examples = $('06 Load Examples').all().map(i => i.json);\n\nconst categoriesBlock = categories\n  .map(c => `[${c.code}] ${c.name} — ${c.description || ''}`)\n  .join('\\n');\n\n// Group examples by category, cap per category at MAX_ACTIVE_EXAMPLES_PER_CATEGORY.\nconst cap = parseInt($env.MAX_ACTIVE_EXAMPLES_PER_CATEGORY || '30', 10);\nconst grouped = {};\nfor (const ex of examples) {\n  if (!grouped[ex.category_code]) grouped[ex.category_code] = [];\n  if (grouped[ex.category_code].length < cap) {\n    grouped[ex.category_code].push(ex.example_text);\n  }\n}\nconst examplesBlock = Object.entries(grouped)\n  .map(([code, exs]) => `${code}:\\n  ${exs.map(e => `- ${e}`).join('\\n  ')}`)\n  .join('\\n');\n\nconst systemPrompt = `Ты классифицируешь сообщение time tracker.\nТвоя задача:\n1. Распарсить один или несколько временных слотов.\n2. Определить start_time, end_time и duration_minutes.\n3. Если есть явный код категории в квадратных скобках — использовать его.\n4. Если кода нет — выбрать категорию из списка активных категорий.\n5. Если несколько активностей имеют свои длительности — разделить на несколько slots.\n6. Если несколько активностей есть, но длительности неясны — needs_clarification=true.\n7. Если категория неясна — needs_clarification=true и предложить 2–4 категории.\n8. Не придумывать данные.\n9. Вернуть только JSON.\n\nЕсли сообщение содержит длительность без start_time и end_time, верни duration_minutes,\nа start_time/end_time можно оставить null. Система сама рассчитает время от конца\nпоследнего confirmed slot за день.\n\nВерни строго JSON в виде:\n{\n  \"slots\": [\n    {\n      \"slot_date\": \"YYYY-MM-DD\",\n      \"start_time\": \"HH:MM\" | null,\n      \"end_time\": \"HH:MM\" | null,\n      \"duration_minutes\": 0,\n      \"activity\": \"activity text\",\n      \"category_code\": \"CODE\",\n      \"category_name\": \"Category name\",\n      \"emotional_mark\": \"N\",\n      \"confidence\": 0.95,\n      \"classification_source\": \"ai\" | \"explicit_user_code\",\n      \"needs_clarification\": false,\n      \"clarification_question\": \"\",\n      \"suggested_categories\": []\n    }\n  ]\n}`;\n\nconst userPrompt = `Активные категории:\n${categoriesBlock}\n\nПримеры классификации:\n${examplesBlock}\n\nТекущее сообщение: ${ctx.text}\nТекущая дата: ${ctx.todayDate}`;\n\nreturn [{\n  json: {\n    ...ctx,\n    aiBody: {\n      model: $env.AI_MODEL || 'claude-haiku-4-5-20251001',\n      max_tokens: 1024,\n      system: systemPrompt,\n      messages: [{ role: 'user', content: userPrompt }],\n    },\n  },\n}];"
+      },
+      "name": "07 Build AI Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-280, 100]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.AI_API_URL || 'https://api.anthropic.com/v1/messages'}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "x-api-key", "value": "={{$env.AI_API_KEY}}" },
+            { "name": "anthropic-version", "value": "2023-06-01" },
+            { "name": "content-type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.aiBody) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "name": "08 AI Classify (HTTP)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-60, 100]
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Parse Anthropic response, validate slots, fill missing start_time from\n// last confirmed slot for the day if needed.\n\nconst ctx = $('01 Parse + Authorize + Plan').first().json;\nconst aiResp = $input.first().json;\n\nlet slots = [];\nlet rawText = '';\ntry {\n  const content = (aiResp.content || []).find(c => c.type === 'text');\n  rawText = content ? content.text : '';\n  // Strip ```json fences if model added them.\n  const stripped = rawText\n    .replace(/^```(?:json)?\\s*/i, '')\n    .replace(/```\\s*$/i, '')\n    .trim();\n  const parsed = JSON.parse(stripped);\n  slots = Array.isArray(parsed.slots) ? parsed.slots : [];\n} catch (e) {\n  return [{\n    json: {\n      ...ctx,\n      aiError: String(e),\n      aiRawText: rawText,\n      slots: [],\n      needsClarification: true,\n      clarificationText:\n        'Не удалось разобрать сообщение. Пришли его в формате `0855-0955 [CODE] activity` или `20 мин activity`.',\n    },\n  }];\n}\n\nconst threshold = parseFloat($env.AI_CONFIDENCE_THRESHOLD || '0.80');\nlet needsClarification = false;\nlet clarificationText = '';\n\n// If AI flagged any slot or returned nothing, ask for clarification.\nif (slots.length === 0) {\n  needsClarification = true;\n  clarificationText = 'Не получилось распознать ни одного слота. Уточни время и активность, пожалуйста.';\n} else {\n  for (const s of slots) {\n    if (s.needs_clarification === true || (typeof s.confidence === 'number' && s.confidence < threshold)) {\n      needsClarification = true;\n      const opts = (s.suggested_categories || []).slice(0, 4);\n      const q = s.clarification_question || `Не уверен в категории слота: ${s.activity || ctx.text}`;\n      clarificationText = `${q}` + (opts.length\n        ? `\\n\\nВыбери один вариант:\\n` + opts.map((o, i) => `${i + 1}. [${o.code || o}] ${o.name || ''}`).join('\\n')\n        : '');\n      break;\n    }\n  }\n}\n\n// Pad time strings, normalize duration_minutes.\nfor (const s of slots) {\n  if (s.start_time && /^\\d{1,2}:\\d{2}$/.test(s.start_time)) {\n    const [h, m] = s.start_time.split(':');\n    s.start_time = `${h.padStart(2, '0')}:${m}`;\n  }\n  if (s.end_time && /^\\d{1,2}:\\d{2}$/.test(s.end_time)) {\n    const [h, m] = s.end_time.split(':');\n    s.end_time = `${h.padStart(2, '0')}:${m}`;\n  }\n  if (!s.slot_date) s.slot_date = ctx.todayDate;\n  if (!s.classification_source) s.classification_source = 'ai';\n  if (!s.emotional_mark) s.emotional_mark = 'N';\n  s.duration_minutes = parseInt(s.duration_minutes, 10) || 0;\n}\n\nreturn [{\n  json: {\n    ...ctx,\n    slots,\n    needsClarification,\n    clarificationText,\n    rawAi: rawText,\n  },\n}];"
+      },
+      "name": "09 Process AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Find the end_time of the last confirmed slot for this date,\n-- to chain duration-only slots after it.\nSELECT MAX(end_time) AS last_end\nFROM time_slots\nWHERE slot_date = $1::date\n  AND status = 'confirmed'\n  AND end_time IS NOT NULL;",
+        "options": {
+          "queryReplacement": "={{$json.todayDate}}"
+        }
+      },
+      "name": "10 Find Last Slot End",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [380, 100],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Fill missing start_time/end_time for duration-only slots, chaining\n// from the last confirmed end_time of the day. Then build the SQL\n// statements that will insert the batch + slots in one transaction.\n\nconst ctx = $('09 Process AI Response').first().json;\nconst lastEndRow = $input.first().json;\nconst lastEnd = lastEndRow && lastEndRow.last_end ? lastEndRow.last_end : null;\n\nfunction toMinutes(t) {\n  if (!t) return null;\n  const m = /^([0-2]?\\d):([0-5]\\d)/.exec(t);\n  if (!m) return null;\n  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);\n}\nfunction fromMinutes(total) {\n  const h = Math.floor(total / 60);\n  const m = total % 60;\n  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;\n}\n\nlet cursor = toMinutes(lastEnd);\n\nfor (const s of ctx.slots) {\n  if (!s.start_time && s.duration_minutes > 0) {\n    if (cursor === null) {\n      // No anchor — leave times null; status will still be confirmed if AI was confident.\n      // (You can change this to mark needs_clarification if you prefer strictness.)\n      continue;\n    }\n    s.start_time = fromMinutes(cursor);\n    s.end_time = fromMinutes(cursor + s.duration_minutes);\n    cursor += s.duration_minutes;\n  } else if (s.start_time && s.end_time) {\n    cursor = toMinutes(s.end_time);\n  }\n}\n\nreturn [{ json: ctx }];"
+      },
+      "name": "11 Backfill Times",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 100]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{$json.needsClarification}}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "name": "12 Needs Clarification?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [820, 100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH new_batch AS (\n  INSERT INTO time_message_batches (\n    telegram_chat_id, telegram_user_id, telegram_message_id,\n    raw_text, batch_date, status\n  )\n  VALUES ($1, $2, $3, $4, $5::date, 'pending_clarification')\n  RETURNING id\n)\nINSERT INTO time_pending_clarifications (\n  batch_id, telegram_chat_id, telegram_user_id,\n  original_text, question_text, status\n)\nSELECT id, $1, $2, $4, $6, 'pending'\nFROM new_batch\nRETURNING batch_id;",
+        "options": {
+          "queryReplacement": "={{$json.chatId}}, {{$json.userId}}, {{$json.messageId}}, {{$json.text}}, {{$json.todayDate}}, {{$json.clarificationText}}"
+        }
+      },
+      "name": "13a Save Pending Clarification",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1040, 280],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('11 Backfill Times').first().json.chatId }}",
+        "text": "={{ $('11 Backfill Times').first().json.clarificationText }}",
+        "additionalFields": {}
+      },
+      "name": "13b Send Clarification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1260, 280],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build a single multi-statement SQL string that:\n//   1. inserts the batch (status=confirmed)\n//   2. inserts each slot referencing the new batch_id\n//   3. (optional) inserts an example for explicit_user_code slots when\n//      that category has fewer than MAX_ACTIVE_EXAMPLES_PER_CATEGORY.\n// We return the SQL and parameters separately for the next Postgres node.\n\nconst ctx = $input.first().json;\nconst slots = ctx.slots || [];\nif (slots.length === 0) {\n  return [{ json: { ...ctx, skipSave: true } }];\n}\n\n// Build a single CTE chain. Use a JSONB array for slots to keep parameters\n// flat — much safer than string-interpolating user content.\nconst slotsJson = JSON.stringify(slots);\nconst cap = parseInt($env.MAX_ACTIVE_EXAMPLES_PER_CATEGORY || '30', 10);\n\nconst sql = `\nWITH new_batch AS (\n  INSERT INTO time_message_batches (\n    telegram_chat_id, telegram_user_id, telegram_message_id,\n    raw_text, batch_date, status\n  )\n  VALUES ($1, $2, $3, $4, $5::date, 'confirmed')\n  RETURNING id\n),\nslot_rows AS (\n  SELECT\n    (s ->> 'slot_date')::date              AS slot_date,\n    NULLIF(s ->> 'start_time', '')::time   AS start_time,\n    NULLIF(s ->> 'end_time', '')::time     AS end_time,\n    (s ->> 'duration_minutes')::int        AS duration_minutes,\n    s ->> 'activity'                       AS activity,\n    s ->> 'category_code'                  AS category_code,\n    s ->> 'category_name'                  AS category_name,\n    COALESCE(s ->> 'emotional_mark', 'N')  AS emotional_mark,\n    NULLIF(s ->> 'confidence', '')::numeric AS confidence,\n    COALESCE(s ->> 'classification_source', 'ai') AS classification_source\n  FROM jsonb_array_elements($6::jsonb) AS s\n  WHERE COALESCE((s ->> 'duration_minutes')::int, 0) > 0\n),\nins AS (\n  INSERT INTO time_slots (\n    batch_id, slot_date, start_time, end_time,\n    duration_minutes, activity, category_code, category_name,\n    emotional_mark, confidence, classification_source, status\n  )\n  SELECT\n    nb.id, sr.slot_date, sr.start_time, sr.end_time,\n    sr.duration_minutes, sr.activity, sr.category_code, sr.category_name,\n    sr.emotional_mark, sr.confidence, sr.classification_source, 'confirmed'\n  FROM new_batch nb CROSS JOIN slot_rows sr\n  RETURNING category_code, activity, classification_source\n),\n-- Save explicit-code messages as examples up to the per-category cap.\nexamples_to_add AS (\n  SELECT category_code, activity\n  FROM ins\n  WHERE classification_source = 'explicit_user_code'\n    AND category_code IS NOT NULL\n)\nINSERT INTO time_category_examples (category_code, example_text, source)\nSELECT eta.category_code, $4, 'explicit_user_code'\nFROM examples_to_add eta\nWHERE (\n  SELECT COUNT(*) FROM time_category_examples\n  WHERE category_code = eta.category_code AND is_active = TRUE\n) < ${cap}\nON CONFLICT (category_code, example_text) DO NOTHING\nRETURNING category_code;\n`;\n\nreturn [{\n  json: {\n    ...ctx,\n    saveSql: sql,\n    saveParams: [\n      ctx.chatId,\n      ctx.userId,\n      ctx.messageId,\n      ctx.text,\n      ctx.todayDate,\n      slotsJson,\n    ],\n  },\n}];"
+      },
+      "name": "14 Build Save SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, -100]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{$json.saveSql}}",
+        "options": {
+          "queryReplacement": "={{$json.saveParams.join(', ')}}"
+        }
+      },
+      "name": "15 Save Batch + Slots",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1260, -100],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- All in one trip: today totals, week totals, daily goals, weekly goals.\nWITH today AS (\n  SELECT $1::date AS d\n),\nweek_bounds AS (\n  SELECT\n    (DATE_TRUNC('week', $1::date)::date) AS w_start,\n    (DATE_TRUNC('week', $1::date)::date + INTERVAL '6 days')::date AS w_end\n)\nSELECT 'today_total' AS kind, c.code AS category_code, c.name AS category_name,\n       COALESCE(SUM(s.duration_minutes), 0)::int AS total_minutes,\n       NULL::date AS period_start, NULL::date AS period_end\nFROM time_categories c\nLEFT JOIN time_slots s\n  ON s.category_code = c.code AND s.status = 'confirmed' AND s.slot_date = $1::date\nGROUP BY c.code, c.name\nUNION ALL\nSELECT 'week_total', c.code, c.name,\n       COALESCE(SUM(s.duration_minutes), 0)::int,\n       wb.w_start, wb.w_end\nFROM time_categories c\nCROSS JOIN week_bounds wb\nLEFT JOIN time_slots s\n  ON s.category_code = c.code AND s.status = 'confirmed'\n     AND s.slot_date BETWEEN wb.w_start AND wb.w_end\nGROUP BY c.code, c.name, wb.w_start, wb.w_end\nUNION ALL\nSELECT 'goal_daily', g.category_code, c.name, g.goal_minutes,\n       g.date_from, g.date_to\nFROM time_goals g\nJOIN time_categories c ON c.code = g.category_code\nWHERE g.is_active = TRUE AND g.goal_type = 'daily'\n  AND $1::date BETWEEN g.date_from AND g.date_to\nUNION ALL\nSELECT 'goal_weekly', g.category_code, c.name, g.goal_minutes,\n       g.date_from, g.date_to\nFROM time_goals g\nJOIN time_categories c ON c.code = g.category_code\nWHERE g.is_active = TRUE AND g.goal_type = 'weekly'\n  AND $1::date BETWEEN g.date_from AND g.date_to;",
+        "options": {
+          "queryReplacement": "={{ $('01 Parse + Authorize + Plan').first().json.todayDate }}"
+        }
+      },
+      "name": "16 Aggregate Totals + Goals",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1480, -100],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT telegram_message_id\nFROM time_dashboard_messages\nWHERE telegram_chat_id = $1 AND dashboard_scope = 'main';",
+        "options": {
+          "queryReplacement": "={{ $('01 Parse + Authorize + Plan').first().json.chatId }}"
+        }
+      },
+      "name": "17 Get Last Dashboard Msg",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1700, -100],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Format the dashboard text per the spec §16.\n// Inputs:\n//   $('01 Parse + Authorize + Plan').first().json — base context\n//   $('16 Aggregate Totals + Goals').all()        — totals + goals rows\n//   $('17 Get Last Dashboard Msg').all()          — old dashboard msg id (0 or 1 row)\n//   $('11 Backfill Times').first().json (optional) — slots that were just added\n\nconst ctx = $('01 Parse + Authorize + Plan').first().json;\nconst rows = $('16 Aggregate Totals + Goals').all().map(i => i.json);\nconst lastDashRows = $('17 Get Last Dashboard Msg').all().map(i => i.json);\nconst oldMsgId = lastDashRows.length ? lastDashRows[0].telegram_message_id : null;\n\nlet justAdded = [];\ntry {\n  const last = $('11 Backfill Times').first()?.json;\n  if (last && Array.isArray(last.slots)) justAdded = last.slots;\n} catch (_) { /* dashboard-only flow has no Backfill Times input */ }\n\nconst todayTotals = new Map();\nconst weekTotals = new Map();\nconst dailyGoals = new Map();\nconst weeklyGoals = new Map();\nconst categoryNames = new Map();\n\nfor (const r of rows) {\n  categoryNames.set(r.category_code, r.category_name);\n  if (r.kind === 'today_total') todayTotals.set(r.category_code, r.total_minutes);\n  else if (r.kind === 'week_total') weekTotals.set(r.category_code, r.total_minutes);\n  else if (r.kind === 'goal_daily') dailyGoals.set(r.category_code, r.total_minutes);\n  else if (r.kind === 'goal_weekly') weeklyGoals.set(r.category_code, r.total_minutes);\n}\n\nfunction fmtH(min) {\n  const h = Math.floor(min / 60);\n  const m = min % 60;\n  if (h === 0) return `${m}м`;\n  if (m === 0) return `${h}ч`;\n  return `${h}ч ${m}м`;\n}\nfunction bar(done, goal) {\n  const ratio = goal > 0 ? Math.max(0, Math.min(1, done / goal)) : 0;\n  const filled = Math.round(ratio * 10);\n  return '█'.repeat(filled) + '░'.repeat(10 - filled);\n}\nfunction pct(done, goal) {\n  if (goal <= 0) return '0.0%';\n  return ((done / goal) * 100).toFixed(1) + '%';\n}\n\nconst lines = [];\n\nif (justAdded.length > 0) {\n  lines.push('Добавлено:');\n  for (const s of justAdded) {\n    const name = categoryNames.get(s.category_code) || s.category_name || s.category_code || '?';\n    lines.push(`  ${fmtH(s.duration_minutes)} → ${name}`);\n  }\n  lines.push('');\n}\n\nif (weeklyGoals.size > 0) {\n  lines.push('Недельные цели:');\n  for (const [code, goal] of weeklyGoals) {\n    const done = weekTotals.get(code) || 0;\n    const remaining = Math.max(0, goal - done);\n    lines.push(`  ${code}`);\n    lines.push(`    ${bar(done, goal)} ${pct(done, goal)} — ${fmtH(done)} / ${fmtH(goal)}`);\n    lines.push(`    Осталось: ${fmtH(remaining)}`);\n  }\n  lines.push('');\n}\n\nif (dailyGoals.size > 0) {\n  lines.push('Дневные цели:');\n  for (const [code, goal] of dailyGoals) {\n    const done = todayTotals.get(code) || 0;\n    const remaining = Math.max(0, goal - done);\n    lines.push(`  ${code}`);\n    lines.push(`    ${bar(done, goal)} ${pct(done, goal)} — ${fmtH(done)} / ${fmtH(goal)}`);\n    lines.push(`    Осталось сегодня: ${fmtH(remaining)}`);\n  }\n  lines.push('');\n}\n\n// \"Остальные категории сегодня\" — only show categories with activity today\n// that aren't already shown via daily/weekly goals.\nconst maxCats = parseInt($env.DASHBOARD_MAX_CATEGORIES || '8', 10);\nconst rest = [];\nfor (const [code, mins] of todayTotals) {\n  if (mins <= 0) continue;\n  if (dailyGoals.has(code) || weeklyGoals.has(code)) continue;\n  rest.push([code, mins]);\n}\nrest.sort((a, b) => b[1] - a[1]);\nif (rest.length > 0) {\n  lines.push('Остальные категории сегодня:');\n  for (const [code, mins] of rest.slice(0, maxCats)) {\n    lines.push(`  ${code}: ${fmtH(mins)}`);\n  }\n  lines.push('');\n}\n\nconst now = new Date(\n  new Date().toLocaleString('en-US', { timeZone: $env.GENERIC_TIMEZONE || 'Europe/Warsaw' })\n);\nconst hh = String(now.getHours()).padStart(2, '0');\nconst mm = String(now.getMinutes()).padStart(2, '0');\nlines.push(`Последнее обновление: ${hh}:${mm}`);\n\nconst dashboardText = lines.join('\\n');\n\nreturn [{\n  json: {\n    chatId: ctx.chatId,\n    oldMsgId,\n    dashboardText,\n  },\n}];"
+      },
+      "name": "18 Format Dashboard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, -100]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "deleteMessage",
+        "chatId": "={{$json.chatId}}",
+        "messageId": "={{$json.oldMsgId || 0}}"
+      },
+      "name": "19 Delete Old Dashboard",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2140, -100],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('18 Format Dashboard').first().json.chatId }}",
+        "text": "={{ $('18 Format Dashboard').first().json.dashboardText }}",
+        "additionalFields": {}
+      },
+      "name": "20 Send New Dashboard",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2360, -100],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO time_dashboard_messages\n  (telegram_chat_id, telegram_message_id, dashboard_scope)\nVALUES ($1, $2, 'main')\nON CONFLICT (telegram_chat_id, dashboard_scope)\nDO UPDATE SET\n  telegram_message_id = EXCLUDED.telegram_message_id,\n  updated_at = NOW();",
+        "options": {
+          "queryReplacement": "={{ $('18 Format Dashboard').first().json.chatId }}, {{$json.message_id}}"
+        }
+      },
+      "name": "21 Upsert Dashboard Msg",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2580, -100],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "01 Parse + Authorize + Plan", "type": "main", "index": 0 }]]
+    },
+    "01 Parse + Authorize + Plan": {
+      "main": [[{ "node": "02 Is Authorized?", "type": "main", "index": 0 }]]
+    },
+    "02 Is Authorized?": {
+      "main": [
+        [{ "node": "03 Action Switch", "type": "main", "index": 0 }],
+        [{ "node": "02b Send Access Denied", "type": "main", "index": 0 }]
+      ]
+    },
+    "03 Action Switch": {
+      "main": [
+        [{ "node": "04a Send Static Reply", "type": "main", "index": 0 }],
+        [{ "node": "04b Send TODO Reply", "type": "main", "index": 0 }],
+        [{ "node": "16 Aggregate Totals + Goals", "type": "main", "index": 0 }],
+        [{ "node": "05 Load Categories", "type": "main", "index": 0 }]
+      ]
+    },
+    "05 Load Categories": {
+      "main": [[{ "node": "06 Load Examples", "type": "main", "index": 0 }]]
+    },
+    "06 Load Examples": {
+      "main": [[{ "node": "07 Build AI Request", "type": "main", "index": 0 }]]
+    },
+    "07 Build AI Request": {
+      "main": [[{ "node": "08 AI Classify (HTTP)", "type": "main", "index": 0 }]]
+    },
+    "08 AI Classify (HTTP)": {
+      "main": [[{ "node": "09 Process AI Response", "type": "main", "index": 0 }]]
+    },
+    "09 Process AI Response": {
+      "main": [[{ "node": "10 Find Last Slot End", "type": "main", "index": 0 }]]
+    },
+    "10 Find Last Slot End": {
+      "main": [[{ "node": "11 Backfill Times", "type": "main", "index": 0 }]]
+    },
+    "11 Backfill Times": {
+      "main": [[{ "node": "12 Needs Clarification?", "type": "main", "index": 0 }]]
+    },
+    "12 Needs Clarification?": {
+      "main": [
+        [{ "node": "13a Save Pending Clarification", "type": "main", "index": 0 }],
+        [{ "node": "14 Build Save SQL", "type": "main", "index": 0 }]
+      ]
+    },
+    "13a Save Pending Clarification": {
+      "main": [[{ "node": "13b Send Clarification", "type": "main", "index": 0 }]]
+    },
+    "14 Build Save SQL": {
+      "main": [[{ "node": "15 Save Batch + Slots", "type": "main", "index": 0 }]]
+    },
+    "15 Save Batch + Slots": {
+      "main": [[{ "node": "16 Aggregate Totals + Goals", "type": "main", "index": 0 }]]
+    },
+    "16 Aggregate Totals + Goals": {
+      "main": [[{ "node": "17 Get Last Dashboard Msg", "type": "main", "index": 0 }]]
+    },
+    "17 Get Last Dashboard Msg": {
+      "main": [[{ "node": "18 Format Dashboard", "type": "main", "index": 0 }]]
+    },
+    "18 Format Dashboard": {
+      "main": [[{ "node": "19 Delete Old Dashboard", "type": "main", "index": 0 }]]
+    },
+    "19 Delete Old Dashboard": {
+      "main": [[{ "node": "20 Send New Dashboard", "type": "main", "index": 0 }]]
+    },
+    "20 Send New Dashboard": {
+      "main": [[{ "node": "21 Upsert Dashboard Msg", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "tetris" },
+    { "name": "time-tracker" }
+  ]
+}

@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tetris-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/10-init.sql:ro
+    networks:
+      - tetris_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # No ports section: postgres is reachable only via the internal docker network.
+    # If you ever need external access, expose ONLY on 127.0.0.1 with a firewall rule
+    # in front and a strong password — never bind 0.0.0.0:5432.
+
+  n8n:
+    image: n8nio/n8n:1.74.0
+    container_name: tetris-n8n
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # --- DB ---
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_POSTGRESDB_SCHEMA: n8n
+
+      # --- Web / proxy ---
+      N8N_HOST: ${N8N_HOST}
+      N8N_PROTOCOL: ${N8N_PROTOCOL}
+      N8N_PORT: 5678
+      N8N_PATH: ${N8N_PATH}
+      WEBHOOK_URL: ${WEBHOOK_URL}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL}
+      N8N_PROXY_HOPS: 1
+      N8N_TRUST_PROXY: "true"
+      N8N_SECURE_COOKIE: "true"
+
+      # --- Security ---
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_USER_MANAGEMENT_JWT_SECRET: ${N8N_USER_MANAGEMENT_JWT_SECRET}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+      # --- Misc ---
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      TZ: ${TZ}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_LOG_LEVEL: info
+
+      # --- App config visible to workflows via $env ---
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      AI_API_KEY: ${AI_API_KEY}
+      AI_MODEL: ${AI_MODEL}
+      AI_API_URL: ${AI_API_URL}
+      AUTHORIZED_TELEGRAM_USER_IDS: ${AUTHORIZED_TELEGRAM_USER_IDS}
+      AUTHORIZED_TELEGRAM_CHAT_IDS: ${AUTHORIZED_TELEGRAM_CHAT_IDS}
+      AI_CONFIDENCE_THRESHOLD: ${AI_CONFIDENCE_THRESHOLD}
+      MAX_ACTIVE_EXAMPLES_PER_CATEGORY: ${MAX_ACTIVE_EXAMPLES_PER_CATEGORY}
+      DASHBOARD_DEFAULT_MODE: ${DASHBOARD_DEFAULT_MODE}
+      DASHBOARD_MAX_CATEGORIES: ${DASHBOARD_MAX_CATEGORIES}
+
+    # Bind only to loopback so nginx on the host is the only entry point.
+    # The existing host nginx terminates TLS and proxies to 127.0.0.1:5678.
+    ports:
+      - "127.0.0.1:5678:5678"
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+    networks:
+      - tetris_net
+
+volumes:
+  postgres_data:
+    name: tetris_postgres_data
+  n8n_data:
+    name: tetris_n8n_data
+
+networks:
+  tetris_net:
+    name: tetris_net

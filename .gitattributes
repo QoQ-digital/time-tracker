@@ -1,0 +1,12 @@
+# Force LF for everything that runs on the Linux server.
+# Without this, files edited on Windows get CRLF and shell scripts break
+# with `bad interpreter: /usr/bin/env\r`.
+* text=auto eol=lf
+
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.sql  text eol=lf
+*.md   text eol=lf
+*.conf text eol=lf

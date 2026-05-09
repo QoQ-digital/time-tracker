@@ -7,7 +7,7 @@
           "message",
           "edited_message"
         ],
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "Telegram Trigger",
       "type": "n8n-nodes-base.telegramTrigger",
@@ -56,7 +56,7 @@
       "parameters": {
         "chatId": "={{$json.chatId}}",
         "text": "={{$json.replyText}}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "02b Send Access Denied",
       "type": "n8n-nodes-base.telegram",
@@ -223,7 +223,7 @@
       "parameters": {
         "chatId": "={{$json.chatId}}",
         "text": "={{$json.replyText}}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "04a Send Static Reply",
       "type": "n8n-nodes-base.telegram",
@@ -237,7 +237,7 @@
       "parameters": {
         "chatId": "={{$json.chatId}}",
         "text": "={{$json.replyText}}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "04b Send TODO Reply",
       "type": "n8n-nodes-base.telegram",
@@ -381,7 +381,7 @@
       "parameters": {
         "chatId": "={{ $('11 Backfill Times').first().json.chatId }}",
         "text": "={{ $('11 Backfill Times').first().json.clarificationText }}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "13b Send Clarification",
       "type": "n8n-nodes-base.telegram",
@@ -479,7 +479,7 @@
       "parameters": {
         "chatId": "={{ $('18 Format Dashboard').first().json.chatId }}",
         "text": "={{ $('18 Format Dashboard').first().json.dashboardText }}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "20 Send New Dashboard",
       "type": "n8n-nodes-base.telegram",
@@ -533,7 +533,7 @@
       "parameters": {
         "chatId": "={{$json.chatId}}",
         "text": "={{$json.replyText}}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "24 Categories: Send Reply",
       "type": "n8n-nodes-base.telegram",
@@ -571,7 +571,7 @@
       "parameters": {
         "chatId": "={{ $('01 Parse + Authorize + Plan').first().json.chatId }}",
         "text": "={{ '✓ Category saved: [' + $json.code + '] ' + $json.name }}",
-        "additionalFields": { "parse_mode": "HTML" }
+        "additionalFields": { "parse_mode": "HTML", "appendAttribution": false }
       },
       "name": "27 CategoryAdd: Send Confirmation",
       "type": "n8n-nodes-base.telegram",

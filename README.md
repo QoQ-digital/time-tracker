@@ -244,21 +244,21 @@ UPDATE` after each save.
 The workflow handles `Telegram → AI → DB → Dashboard` end-to-end plus
 the `/help`, `/dashboard`, `/today`, `/week`, `/categories`,
 `/category_add`, `/goal_week`, `/goal_day`, `/delete_last`,
-`/edit_last` commands and **edited Telegram messages** (when you
-edit a previous tracked message in Telegram, the old batch is marked
-`replaced` and the new text is re-saved with `parent_batch_id` set).
+`/edit_last` commands, **edited Telegram messages** (when you edit a
+previous tracked message in Telegram, the old batch is marked
+`replaced` and the new text is re-saved with `parent_batch_id` set),
+and **pending-clarification replies** (when the AI is unsure and asks
+a question, you answer with `1`/`2`/… to pick one of the suggested
+categories, or `[CODE]` to pick by code, or just send a fresh message
+to drop the question and start over).
 
 Still to be wired:
 
 * `/dashboard_compact` and `/dashboard_full` — UPDATE `time_user_settings`.
-* **Pending clarification reply** — when a user answers `1` or `[CODE]`,
-  look up the open `time_pending_clarifications` row for the chat,
-  materialize the slot with the chosen category, mark the row resolved.
 
-Each is a small extension of the existing graph: a Code node that
+This one is a small extension of the existing graph: a Code node that
 builds safe SQL (single JSONB literal, see PR #2), a Postgres node that
-runs it, a Telegram node for the reply or a connection back into the
-dashboard render chain. Business logic for each is described in §13–§22
+runs it, a Telegram confirmation. Business logic is described in §15
 of the spec.
 
 ## Credentials handover (for the developer to send back)

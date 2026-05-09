@@ -20,7 +20,7 @@ domain, and a starter n8n workflow that covers the critical end-to-end path
 │ Telegram bot │ ──────────► │     n8n      │ ────────► │ PostgreSQL │
 └──────┬───────┘             │  (workflow)  │ ◄──────── └────────────┘
        │                     │              │  HTTP
-       │                     │              │ ────────► Anthropic API
+       │                     │              │ ────────► OpenAI API
        └──────────◄──────────│              │
               dashboard      └──────────────┘
 ```
@@ -59,13 +59,18 @@ On the dev server you need:
 * Docker + `docker compose` v2 (already installed on qoq-dev).
 * nginx with the existing TLS-terminating server block for `qoq-dev.xyz`
   (already set up).
-* Outbound HTTPS to `api.anthropic.com` and `api.telegram.org`.
+* Outbound HTTPS to `api.openai.com` and `api.telegram.org`. (To switch
+  to Anthropic instead, see the comment in `.env.example` and revert
+  nodes 07/08/09 of the workflow to the previous Anthropic shape.)
 
 You also need to create out-of-band:
 
 1. **A Telegram bot** via [@BotFather](https://t.me/BotFather): `/newbot`,
    give it a name, store the bot token.
-2. **An Anthropic API key**: <https://console.anthropic.com/settings/keys>.
+2. **An OpenAI API key**: <https://platform.openai.com/api-keys>. The
+   workflow uses `gpt-4o-mini` against `/v1/chat/completions` by default;
+   you'll need a billing payment method on the OpenAI Platform account
+   (ChatGPT Plus subscription is separate and does NOT grant API access).
 3. **Your Telegram user_id** (and the chat_id where the bot will live):
    the easiest way is to message [@userinfobot](https://t.me/userinfobot)
    from your account.
@@ -106,7 +111,7 @@ secret**. The required keys are:
 | `N8N_USER_MANAGEMENT_JWT_SECRET`   | from the bootstrap script |
 | `N8N_PATH_SUFFIX`                  | from the bootstrap script |
 | `TELEGRAM_BOT_TOKEN`               | from [@BotFather](https://t.me/BotFather) |
-| `AI_API_KEY`                       | from <https://console.anthropic.com> |
+| `AI_API_KEY`                       | from <https://platform.openai.com/api-keys> |
 | `AUTHORIZED_TELEGRAM_USER_IDS`     | numeric Telegram user_id (from [@userinfobot](https://t.me/userinfobot)) |
 | `AUTHORIZED_TELEGRAM_CHAT_IDS`     | optional, numeric chat_id |
 
@@ -200,7 +205,7 @@ Send another message:
 ```
 
 Expected:
-* No explicit `[CODE]`, so the AI classifier runs (via Anthropic).
+* No explicit `[CODE]`, so the AI classifier runs (OpenAI `gpt-4o-mini`).
 * AI assigns the `TELEGRAM` category (or similar).
 * `start_time` is the `end_time` of the previous slot.
 * Old dashboard is deleted; a new one is sent.
@@ -325,5 +330,5 @@ When the PoC is up, provide the operator (Yaroslav) with:
 * The `.env` file via a secure channel (1Password, encrypted note — **not**
   pasted into chat).
 * The Telegram bot token, also via secure channel.
-* The Anthropic API key, also via secure channel.
+* The OpenAI API key, also via secure channel.
 * A note on the allowlist values currently in `.env`.

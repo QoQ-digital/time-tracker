@@ -1,4 +1,4 @@
-# Tetris Time Tracker (PoC)
+# Time Tracker (PoC)
 
 Telegram bot → n8n → AI classification → PostgreSQL → live Telegram dashboard.
 

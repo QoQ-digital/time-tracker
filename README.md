@@ -243,19 +243,17 @@ UPDATE` after each save.
 
 The workflow handles `Telegram → AI → DB → Dashboard` end-to-end plus
 the `/help`, `/dashboard`, `/today`, `/week`, `/categories`,
-`/category_add`, `/goal_week`, `/goal_day` commands. The following
-pieces of the spec are still to be wired:
+`/category_add`, `/goal_week`, `/goal_day`, `/delete_last`,
+`/edit_last` commands and **edited Telegram messages** (when you
+edit a previous tracked message in Telegram, the old batch is marked
+`replaced` and the new text is re-saved with `parent_batch_id` set).
 
-* `/delete_last` — UPDATE last `confirmed` batch + slots to `deleted`,
-  re-render dashboard.
-* `/edit_last <text>` — UPDATE last batch to `replaced`, then re-enter
-  the explicit/AI flow with `parent_batch_id` set on the new batch.
+Still to be wired:
+
 * `/dashboard_compact` and `/dashboard_full` — UPDATE `time_user_settings`.
 * **Pending clarification reply** — when a user answers `1` or `[CODE]`,
   look up the open `time_pending_clarifications` row for the chat,
   materialize the slot with the chosen category, mark the row resolved.
-* **Edited Telegram messages** — find old batch by `(telegram_chat_id,
-  telegram_message_id)`, mark `replaced`, re-enter the save flow.
 
 Each is a small extension of the existing graph: a Code node that
 builds safe SQL (single JSONB literal, see PR #2), a Postgres node that

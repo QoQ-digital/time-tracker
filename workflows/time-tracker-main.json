@@ -23,7 +23,7 @@
     {
       "parameters": {
         "language": "javaScript",
-        "jsCode": "// 01: parse the Telegram update, run authorization, decide top-level action.\n// Outputs ONE item with normalized fields and a chosen `action` value:\n//   denied | send_text | render_dashboard | save_explicit | ai_classify | todo\n//\n// Fast path: messages of the form \"HH:MM-HH:MM [CODE] activity\" (and the\n// other accepted time-range formats) are parsed here without calling AI.\n// Anything else falls through to ai_classify.\n\nconst raw = $input.first().json;\nconst msg = raw.message || raw.edited_message;\nif (!msg) {\n  return [];\n}\n\nconst isEdit = !!raw.edited_message;\nconst chatId = String(msg.chat.id);\nconst userId = String(msg.from.id);\nconst messageId = String(msg.message_id);\nconst text = (msg.text || '').trim();\n\nconst nowLocal = new Date(\n  new Date().toLocaleString('en-US', { timeZone: $env.GENERIC_TIMEZONE || 'Europe/Warsaw' })\n);\nconst y = nowLocal.getFullYear();\nconst m = String(nowLocal.getMonth() + 1).padStart(2, '0');\nconst d = String(nowLocal.getDate()).padStart(2, '0');\nconst todayDate = `${y}-${m}-${d}`;\n\nconst allowedUsers = ($env.AUTHORIZED_TELEGRAM_USER_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nconst allowedChats = ($env.AUTHORIZED_TELEGRAM_CHAT_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nconst hasAllowlist = allowedUsers.length > 0 || allowedChats.length > 0;\nconst authorized = hasAllowlist\n  && (allowedUsers.includes(userId) || allowedChats.includes(chatId));\n\nconst base = { chatId, userId, messageId, text, isEdit, todayDate, authorized };\n\nif (!authorized) {\n  return [{ json: { ...base, action: 'denied', replyText: 'Access denied.' } }];\n}\n\nif (text.startsWith('/')) {\n  const parts = text.split(/\\s+/);\n  const cmd = parts[0].split('@')[0].toLowerCase();\n  const args = text.slice(parts[0].length).trim();\n\n  if (cmd === '/help') {\n    return [{ json: { ...base, action: 'send_text', replyText:\n`Tetris Time Tracker\n\nFormats:\n  0855-0955 [FRIENDS] разговор с другом\n  1300-1400 интервью\n  20 мин отвечал в Telegram\n\nCommands:\n  /dashboard         show current dashboard\n  /today /week       compact day/week view\n  /categories        list categories\n  /category_add CODE | Name | Description\n  /goal_week CODE | hours\n  /goal_day CODE | hours\n  /delete_last       delete last entry\n  /edit_last <text>  replace last entry\n  /dashboard_compact /dashboard_full\n  /help              this message`,\n    } }];\n  }\n\n  if (cmd === '/dashboard' || cmd === '/today' || cmd === '/week') {\n    return [{ json: { ...base, action: 'render_dashboard', dashboardScope: cmd.slice(1) } }];\n  }\n\n  return [{ json: { ...base, action: 'todo',\n    replyText: `Command ${cmd} is recognized but not wired up in this workflow yet. See README \"Next steps\".` } }];\n}\n\nif (/^[1-9]$/.test(text) || /^\\[[A-Z_][A-Z0-9_]*\\]$/.test(text)) {\n  return [{ json: { ...base, action: 'todo',\n    replyText: 'Pending-clarification resolution is not wired up in this workflow yet.' } }];\n}\n\nconst explicit = parseExplicitRange(text, todayDate);\nif (explicit) {\n  return [{ json: { ...base, action: 'save_explicit', slots: [explicit] } }];\n}\n\nreturn [{ json: { ...base, action: 'ai_classify' } }];\n\n// ---------------------------------------------------------------------\nfunction parseExplicitRange(rawText, today) {\n  // Need an explicit [CODE]; without it we can't skip AI category lookup.\n  const codeRe = /\\[([A-Z_][A-Z0-9_]*)\\]/;\n  const codeMatch = codeRe.exec(rawText);\n  if (!codeMatch) return null;\n  const code = codeMatch[1];\n\n  const stripped = rawText.replace(codeMatch[0], ' ').replace(/\\s+/g, ' ').trim();\n\n  // HH:MM-HH:MM, HHMM-HHMM, HH.MM-HH.MM, HH,MM-HH,MM, H:MM-H:MM, etc.\n  // Hour: 1-2 digits, minute: exactly 2 digits, optional separator : . ,\n  const rangeRe = /(?:^|\\s)(\\d{1,2})[:.,]?(\\d{2})\\s*-\\s*(\\d{1,2})[:.,]?(\\d{2})(?=\\s|$)/;\n  const rm = rangeRe.exec(' ' + stripped + ' ');\n  if (!rm) return null;\n\n  const sH = parseInt(rm[1], 10);\n  const sM = parseInt(rm[2], 10);\n  const eH = parseInt(rm[3], 10);\n  const eM = parseInt(rm[4], 10);\n  if (sH > 23 || sM > 59 || eH > 23 || eM > 59) return null;\n  const startMin = sH * 60 + sM;\n  const endMin = eH * 60 + eM;\n  if (endMin <= startMin) return null;\n\n  const activity = stripped.replace(rm[0].trim(), '').replace(/\\s+/g, ' ').trim() || code;\n\n  return {\n    slot_date: today,\n    start_time: `${String(sH).padStart(2,'0')}:${String(sM).padStart(2,'0')}`,\n    end_time: `${String(eH).padStart(2,'0')}:${String(eM).padStart(2,'0')}`,\n    duration_minutes: endMin - startMin,\n    activity,\n    category_code: code,\n    category_name: null,\n    emotional_mark: 'N',\n    confidence: 1,\n    classification_source: 'explicit_user_code',\n  };\n}"
+        "jsCode": "// 01: parse the Telegram update, run authorization, decide top-level action.\n// Outputs ONE item with normalized fields and a chosen `action` value:\n//   denied | send_text | render_dashboard | save_explicit | ai_classify\n//   command_categories | command_category_add | command_set_goal | todo\n\nconst raw = $input.first().json;\nconst msg = raw.message || raw.edited_message;\nif (!msg) {\n  return [];\n}\n\nconst isEdit = !!raw.edited_message;\nconst chatId = String(msg.chat.id);\nconst userId = String(msg.from.id);\nconst messageId = String(msg.message_id);\nconst text = (msg.text || '').trim();\n\nconst nowLocal = new Date(\n  new Date().toLocaleString('en-US', { timeZone: $env.GENERIC_TIMEZONE || 'Europe/Warsaw' })\n);\nconst y = nowLocal.getFullYear();\nconst m = String(nowLocal.getMonth() + 1).padStart(2, '0');\nconst d = String(nowLocal.getDate()).padStart(2, '0');\nconst todayDate = `${y}-${m}-${d}`;\n\nconst allowedUsers = ($env.AUTHORIZED_TELEGRAM_USER_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nconst allowedChats = ($env.AUTHORIZED_TELEGRAM_CHAT_IDS || '')\n  .split(',').map(s => s.trim()).filter(Boolean);\nconst hasAllowlist = allowedUsers.length > 0 || allowedChats.length > 0;\nconst authorized = hasAllowlist\n  && (allowedUsers.includes(userId) || allowedChats.includes(chatId));\n\nconst base = { chatId, userId, messageId, text, isEdit, todayDate, authorized };\n\nif (!authorized) {\n  return [{ json: { ...base, action: 'denied', replyText: 'Access denied.' } }];\n}\n\nif (text.startsWith('/')) {\n  const parts = text.split(/\\s+/);\n  const cmd = parts[0].split('@')[0].toLowerCase();\n  const args = text.slice(parts[0].length).trim();\n\n  if (cmd === '/help') {\n    return [{ json: { ...base, action: 'send_text', replyText:\n`Time Tracker\n\nFormats:\n  0855-0955 [FRIENDS] разговор с другом\n  1300-1400 интервью\n  20 мин отвечал в Telegram\n\nCommands:\n  /dashboard         show current dashboard\n  /today /week       compact day/week view\n  /categories        list active categories\n  /category_add CODE | Name | Description\n  /goal_week CODE | hours\n  /goal_day CODE | hours\n  /delete_last       delete last entry\n  /edit_last <text>  replace last entry\n  /dashboard_compact /dashboard_full\n  /help              this message`,\n    } }];\n  }\n\n  if (cmd === '/dashboard' || cmd === '/today' || cmd === '/week') {\n    return [{ json: { ...base, action: 'render_dashboard', dashboardScope: cmd.slice(1) } }];\n  }\n\n  if (cmd === '/categories') {\n    return [{ json: { ...base, action: 'command_categories' } }];\n  }\n\n  if (cmd === '/category_add') {\n    const argParts = args.split('|').map(s => s.trim());\n    const code = argParts[0] || '';\n    const name = argParts[1] || '';\n    const description = argParts[2] || null;\n    if (!/^[A-Z_][A-Z0-9_]*$/.test(code) || !name) {\n      return [{ json: { ...base, action: 'send_text', replyText:\n`Использование:\n  /category_add CODE | Name | Description\n\nCODE — заглавные буквы и подчёркивания, начинается с буквы или _.\nНапример: /category_add NEW_PROJECT | Новый проект | Работа над X` } }];\n    }\n    return [{ json: { ...base, action: 'command_category_add',\n      catCode: code, catName: name, catDescription: description } }];\n  }\n\n  if (cmd === '/goal_week' || cmd === '/goal_day') {\n    const argParts = args.split('|').map(s => s.trim());\n    const code = argParts[0] || '';\n    const hoursStr = argParts[1] || '';\n    if (!/^[A-Z_][A-Z0-9_]*$/.test(code) || !/^\\d+(\\.\\d+)?$/.test(hoursStr)) {\n      return [{ json: { ...base, action: 'send_text', replyText:\n`Использование:\n  ${cmd} CODE | hours\n\nПример: ${cmd} JOB_SEARCH | 20` } }];\n    }\n    const hours = parseFloat(hoursStr);\n    if (!(hours > 0) || hours > 24 * 7) {\n      return [{ json: { ...base, action: 'send_text',\n        replyText: 'Hours must be > 0 and <= 168 (one week).' } }];\n    }\n    const goalMinutes = Math.round(hours * 60);\n    const goalType = cmd === '/goal_week' ? 'weekly' : 'daily';\n\n    let goalDateFrom, goalDateTo;\n    const fmt = (dt) => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;\n    if (goalType === 'weekly') {\n      // ISO-style week: Monday..Sunday containing today.\n      const today = new Date(`${todayDate}T00:00:00`);\n      const dow = today.getDay(); // 0=Sun .. 6=Sat\n      const offsetToMonday = (dow + 6) % 7;\n      const monday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - offsetToMonday);\n      const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);\n      goalDateFrom = fmt(monday);\n      goalDateTo = fmt(sunday);\n    } else {\n      goalDateFrom = todayDate;\n      goalDateTo = todayDate;\n    }\n\n    return [{ json: { ...base, action: 'command_set_goal',\n      goalType, goalCode: code, goalMinutes, goalDateFrom, goalDateTo } }];\n  }\n\n  return [{ json: { ...base, action: 'todo',\n    replyText: `Command ${cmd} is recognized but not wired up in this workflow yet. See README \"Next steps\".` } }];\n}\n\nif (/^[1-9]$/.test(text) || /^\\[[A-Z_][A-Z0-9_]*\\]$/.test(text)) {\n  return [{ json: { ...base, action: 'todo',\n    replyText: 'Pending-clarification resolution is not wired up in this workflow yet.' } }];\n}\n\nconst explicit = parseExplicitRange(text, todayDate);\nif (explicit) {\n  return [{ json: { ...base, action: 'save_explicit', slots: [explicit] } }];\n}\n\nreturn [{ json: { ...base, action: 'ai_classify' } }];\n\n// ---------------------------------------------------------------------\nfunction parseExplicitRange(rawText, today) {\n  const codeRe = /\\[([A-Z_][A-Z0-9_]*)\\]/;\n  const codeMatch = codeRe.exec(rawText);\n  if (!codeMatch) return null;\n  const code = codeMatch[1];\n\n  const stripped = rawText.replace(codeMatch[0], ' ').replace(/\\s+/g, ' ').trim();\n\n  const rangeRe = /(?:^|\\s)(\\d{1,2})[:.,]?(\\d{2})\\s*-\\s*(\\d{1,2})[:.,]?(\\d{2})(?=\\s|$)/;\n  const rm = rangeRe.exec(' ' + stripped + ' ');\n  if (!rm) return null;\n\n  const sH = parseInt(rm[1], 10);\n  const sM = parseInt(rm[2], 10);\n  const eH = parseInt(rm[3], 10);\n  const eM = parseInt(rm[4], 10);\n  if (sH > 23 || sM > 59 || eH > 23 || eM > 59) return null;\n  const startMin = sH * 60 + sM;\n  const endMin = eH * 60 + eM;\n  if (endMin <= startMin) return null;\n\n  const activity = stripped.replace(rm[0].trim(), '').replace(/\\s+/g, ' ').trim() || code;\n\n  return {\n    slot_date: today,\n    start_time: `${String(sH).padStart(2,'0')}:${String(sM).padStart(2,'0')}`,\n    end_time: `${String(eH).padStart(2,'0')}:${String(eM).padStart(2,'0')}`,\n    duration_minutes: endMin - startMin,\n    activity,\n    category_code: code,\n    category_name: null,\n    emotional_mark: 'N',\n    confidence: 1,\n    classification_source: 'explicit_user_code',\n  };\n}"
       },
       "name": "01 Parse + Authorize + Plan",
       "type": "n8n-nodes-base.code",
@@ -125,6 +125,48 @@
                 "combinator": "and"
               },
               "outputKey": "save_explicit"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "command_categories",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "command_categories"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "command_category_add",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "command_category_add"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "command_set_goal",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "command_set_goal"
             },
             {
               "conditions": {
@@ -434,6 +476,106 @@
       "credentials": {
         "postgres": { "name": "Tetris Postgres" }
       }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT code, name, description\nFROM time_categories\nWHERE is_active = TRUE\nORDER BY code;",
+        "options": {}
+      },
+      "name": "22 Categories: Query",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-720, 280],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "const ctx = $('01 Parse + Authorize + Plan').first().json;\nconst rows = $input.all().map(i => i.json);\nconst lines = ['Активные категории:', ''];\nfor (const r of rows) {\n  lines.push(`[${r.code}] ${r.name}`);\n  if (r.description) lines.push(`  ${r.description}`);\n}\nif (rows.length === 0) {\n  lines.push('(пусто — добавь /category_add CODE | Name | Description)');\n}\nreturn [{ json: { chatId: ctx.chatId, replyText: lines.join('\\n') } }];"
+      },
+      "name": "23 Categories: Format Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-500, 280]
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.chatId}}",
+        "text": "={{$json.replyText}}",
+        "additionalFields": {}
+      },
+      "name": "24 Categories: Send Reply",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-280, 280],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build the upsert SQL for /category_add. Single JSONB literal so we\n// don't trip n8n's queryReplacement comma-splitting bug (PR #2).\nconst ctx = $input.first().json;\nfunction jsonbLiteral(obj) {\n  return `'${JSON.stringify(obj).replace(/'/g, \"''\")}'::jsonb`;\n}\nconst payload = {\n  code: ctx.catCode,\n  name: ctx.catName,\n  description: ctx.catDescription,\n};\nconst commandSql = `\nWITH input AS (SELECT ${jsonbLiteral(payload)} AS d)\nINSERT INTO time_categories (code, name, description, is_active)\nSELECT d->>'code', d->>'name', d->>'description', TRUE\nFROM input\nON CONFLICT (code) DO UPDATE\n  SET name = EXCLUDED.name,\n      description = COALESCE(EXCLUDED.description, time_categories.description),\n      is_active = TRUE,\n      updated_at = NOW()\nRETURNING code, name;\n`;\nreturn [{ json: { ...ctx, commandSql } }];"
+      },
+      "name": "25 CategoryAdd: Build SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-720, 440]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{$json.commandSql}}",
+        "options": {}
+      },
+      "name": "26 CategoryAdd: Execute",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-500, 440],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('01 Parse + Authorize + Plan').first().json.chatId }}",
+        "text": "={{ '✓ Category saved: [' + $json.code + '] ' + $json.name }}",
+        "additionalFields": {}
+      },
+      "name": "27 CategoryAdd: Send Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [-280, 440],
+      "credentials": {
+        "telegramApi": { "name": "Tetris Telegram Bot" }
+      }
+    },
+    {
+      "parameters": {
+        "language": "javaScript",
+        "jsCode": "// Build the upsert SQL for /goal_week | /goal_day. Single JSONB literal.\nconst ctx = $input.first().json;\nfunction jsonbLiteral(obj) {\n  return `'${JSON.stringify(obj).replace(/'/g, \"''\")}'::jsonb`;\n}\nconst payload = {\n  goal_type: ctx.goalType,\n  date_from: ctx.goalDateFrom,\n  date_to: ctx.goalDateTo,\n  code: ctx.goalCode,\n  minutes: ctx.goalMinutes,\n};\nconst commandSql = `\nWITH input AS (SELECT ${jsonbLiteral(payload)} AS d)\nINSERT INTO time_goals (goal_type, date_from, date_to, category_code, goal_minutes, is_active)\nSELECT\n  d->>'goal_type',\n  (d->>'date_from')::date,\n  (d->>'date_to')::date,\n  d->>'code',\n  (d->>'minutes')::int,\n  TRUE\nFROM input\nON CONFLICT (goal_type, date_from, date_to, category_code) DO UPDATE\n  SET goal_minutes = EXCLUDED.goal_minutes,\n      is_active = TRUE,\n      updated_at = NOW()\nRETURNING goal_type, category_code, goal_minutes;\n`;\nreturn [{ json: { ...ctx, commandSql } }];"
+      },
+      "name": "28 SetGoal: Build SQL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-720, 600]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "={{$json.commandSql}}",
+        "options": {}
+      },
+      "name": "29 SetGoal: Execute",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [-500, 600],
+      "credentials": {
+        "postgres": { "name": "Tetris Postgres" }
+      }
     }
   ],
   "connections": {
@@ -455,6 +597,9 @@
         [{ "node": "04b Send TODO Reply", "type": "main", "index": 0 }],
         [{ "node": "16 Aggregate Totals + Goals", "type": "main", "index": 0 }],
         [{ "node": "14 Build Save SQL", "type": "main", "index": 0 }],
+        [{ "node": "22 Categories: Query", "type": "main", "index": 0 }],
+        [{ "node": "25 CategoryAdd: Build SQL", "type": "main", "index": 0 }],
+        [{ "node": "28 SetGoal: Build SQL", "type": "main", "index": 0 }],
         [{ "node": "05 Load Categories", "type": "main", "index": 0 }]
       ]
     },
@@ -508,6 +653,24 @@
     },
     "20 Send New Dashboard": {
       "main": [[{ "node": "21 Upsert Dashboard Msg", "type": "main", "index": 0 }]]
+    },
+    "22 Categories: Query": {
+      "main": [[{ "node": "23 Categories: Format Reply", "type": "main", "index": 0 }]]
+    },
+    "23 Categories: Format Reply": {
+      "main": [[{ "node": "24 Categories: Send Reply", "type": "main", "index": 0 }]]
+    },
+    "25 CategoryAdd: Build SQL": {
+      "main": [[{ "node": "26 CategoryAdd: Execute", "type": "main", "index": 0 }]]
+    },
+    "26 CategoryAdd: Execute": {
+      "main": [[{ "node": "27 CategoryAdd: Send Confirmation", "type": "main", "index": 0 }]]
+    },
+    "28 SetGoal: Build SQL": {
+      "main": [[{ "node": "29 SetGoal: Execute", "type": "main", "index": 0 }]]
+    },
+    "29 SetGoal: Execute": {
+      "main": [[{ "node": "16 Aggregate Totals + Goals", "type": "main", "index": 0 }]]
     }
   },
   "active": false,

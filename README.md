@@ -159,20 +159,23 @@ docker compose logs -f n8n
 
 ## Common operations
 
-### Add a category
+### Add or update a category
 
 ```
 /category_add EXAMPLE | Example category | What this category covers
 ```
 
-(Stub today — until the command is wired up, run SQL directly:)
+`CODE` must be `UPPERCASE_UNDERSCORE` and start with a letter or
+underscore. The command upserts: re-running with the same code
+updates the name/description and re-activates the category.
 
-```bash
-docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
-INSERT INTO time_categories (code, name, description)
-VALUES ('EXAMPLE', 'Example category', 'What this category covers');
-SQL
+### List active categories
+
 ```
+/categories
+```
+
+Replies with all categories where `is_active = TRUE`, sorted by code.
 
 ### Set a goal
 
@@ -181,20 +184,10 @@ SQL
 /goal_day  PROJECT_A  | 4
 ```
 
-Equivalent SQL:
-
-```sql
-INSERT INTO time_goals (goal_type, date_from, date_to, category_code, goal_minutes)
-VALUES (
-  'weekly',
-  date_trunc('week', CURRENT_DATE)::date,
-  date_trunc('week', CURRENT_DATE)::date + INTERVAL '6 days',
-  'JOB_SEARCH',
-  20 * 60
-)
-ON CONFLICT (goal_type, date_from, date_to, category_code)
-DO UPDATE SET goal_minutes = EXCLUDED.goal_minutes, is_active = TRUE, updated_at = NOW();
-```
+Hours can be a decimal (`/goal_week SPORT | 2.5`). The week is
+Monday–Sunday containing today. Re-running upserts. After the goal
+is saved, the dashboard is re-rendered and sent automatically so
+you immediately see the new progress bar.
 
 ### Backup / restore
 
@@ -248,29 +241,27 @@ UPDATE` after each save.
 
 ## Next steps
 
-The starter workflow handles `Telegram → AI → DB → Dashboard` end-to-end and
-the `/help`, `/dashboard`, `/today`, `/week` commands. The following pieces
-of the spec are deliberately stubbed and need to be added in the n8n UI on
-top of the imported workflow:
+The workflow handles `Telegram → AI → DB → Dashboard` end-to-end plus
+the `/help`, `/dashboard`, `/today`, `/week`, `/categories`,
+`/category_add`, `/goal_week`, `/goal_day` commands. The following
+pieces of the spec are still to be wired:
 
-* `/category_add CODE | Name | Description` — INSERT into `time_categories`.
-* `/goal_week CODE | hours` and `/goal_day CODE | hours` — INSERT into
-  `time_goals` with `date_trunc('week', …)` / `CURRENT_DATE` bounds.
 * `/delete_last` — UPDATE last `confirmed` batch + slots to `deleted`,
   re-render dashboard.
-* `/edit_last <text>` — UPDATE last batch to `replaced`, then re-enter the
-  AI flow with `parent_batch_id` set on the new batch.
-* `/categories` — SELECT from `time_categories`, format and send.
+* `/edit_last <text>` — UPDATE last batch to `replaced`, then re-enter
+  the explicit/AI flow with `parent_batch_id` set on the new batch.
 * `/dashboard_compact` and `/dashboard_full` — UPDATE `time_user_settings`.
 * **Pending clarification reply** — when a user answers `1` or `[CODE]`,
-  look up the open `time_pending_clarifications` row for the chat, materialize
-  the slot with the chosen category, mark the row resolved.
+  look up the open `time_pending_clarifications` row for the chat,
+  materialize the slot with the chosen category, mark the row resolved.
 * **Edited Telegram messages** — find old batch by `(telegram_chat_id,
-  telegram_message_id)`, mark `replaced`, re-enter AI flow.
+  telegram_message_id)`, mark `replaced`, re-enter the save flow.
 
-Each is a small extension of the existing graph: clone an existing branch,
-swap the SQL in the Postgres node, wire the new Switch outputKey. The
-business logic for each is described in §4–§22 of the spec.
+Each is a small extension of the existing graph: a Code node that
+builds safe SQL (single JSONB literal, see PR #2), a Postgres node that
+runs it, a Telegram node for the reply or a connection back into the
+dashboard render chain. Business logic for each is described in §13–§22
+of the spec.
 
 ## Credentials handover (for the developer to send back)
 

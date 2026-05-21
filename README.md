@@ -210,6 +210,22 @@ Expected:
 * `start_time` is the `end_time` of the previous slot.
 * Old dashboard is deleted; a new one is sent.
 
+### Voice input
+
+You can also send a **voice message** instead of typing. Hold the
+microphone icon in the bot's chat, speak naturally (e.g. _"восьма
+п'ятдесят п'ять до дев'ятої п'ятдесят п'ять, інтерв'ю"_) and release.
+The bot transcribes via OpenAI Whisper, then runs the transcription
+through the same explicit-parse / AI-classify path as a typed
+message. Round-trip is ~4–6 seconds.
+
+Cost: roughly $0.006 per minute of audio (whisper-1). At ~50 voice
+messages/day averaging 20s each, around $3/month.
+
+Auto language detection. Works equally well for Ukrainian, Russian,
+English. Numbers spoken in words (_"восьма п'ятдесят п'ять"_) are
+normalized by the gpt-4o-mini classifier into `08:55` form.
+
 If you don't see the dashboard, tail the n8n logs:
 
 ```bash

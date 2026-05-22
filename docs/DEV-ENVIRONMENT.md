@@ -1,0 +1,129 @@
+# Dev environment
+
+Parallel n8n + Postgres stack on the same Hetzner host as prod, isolated by
+container names, docker volumes, port, DB, and nginx vhost. Prod is
+untouched while you iterate on `develop`.
+
+## Layout
+
+| Concern           | Prod                                | Dev                                            |
+| ----------------- | ----------------------------------- | ---------------------------------------------- |
+| Branch            | `main`                              | `develop`                                      |
+| Deploy dir        | `/opt/time-tracker`                 | `/opt/time-tracker-dev`                        |
+| Compose file      | `docker-compose.yml`                | `docker-compose.dev.yml`                       |
+| Compose project   | `time-tracker` (default)            | `time-tracker-dev` (env var)                   |
+| Postgres DB       | `time_tracker`                      | `time_tracker_dev`                             |
+| Postgres user     | `time_tracker_app`                  | `time_tracker_dev_app`                         |
+| n8n container     | `tetris-n8n`                        | `tetris-n8n-dev`                               |
+| Postgres container| `tetris-postgres`                   | `tetris-postgres-dev`                          |
+| Docker network    | `tetris_net`                        | `tetris_net_dev`                               |
+| Postgres volume   | `tetris_postgres_data`              | `tetris_postgres_data_dev`                     |
+| n8n volume        | `tetris_n8n_data`                   | `tetris_n8n_data_dev`                          |
+| n8n host port     | `127.0.0.1:5678`                    | `127.0.0.1:5679`                               |
+| Hostname          | `qoq-dev.xyz`                       | `tracker-dev.qoq-dev.xyz`                      |
+| Telegram bot      | `@enotebot` (prod token)            | `@Time_treckerDevBot` (dev token)              |
+| Deploy workflow   | `.github/workflows/deploy.yml`      | `.github/workflows/deploy-dev.yml`             |
+| GH environment    | `qoq-dev`                           | `qoq-dev-dev`                                  |
+| Secret prefix     | `POSTGRES_PASSWORD`, `N8N_*`, …     | `DEV_POSTGRES_PASSWORD`, `DEV_N8N_*`, …        |
+
+`AI_API_KEY`, `DEPLOY_SSH_KEY`, `DEPLOY_SSH_HOST`, `DEPLOY_SSH_USER` are
+shared between prod and dev — they don't need a `DEV_` twin.
+
+## Bring-up checklist
+
+1. **Telegram bot** — `@BotFather` → `/newbot` → name `Time Tracker Dev` →
+   username `Time_treckerDevBot` → copy token (becomes
+   `DEV_TELEGRAM_BOT_TOKEN`). Send `/setprivacy` → Disable so the bot sees
+   all messages, matching prod.
+
+2. **DNS** — Hostinger (k2kermanych account) → qoq-dev.xyz zone → add
+   A-record `tracker-dev` → `188.34.205.181`, TTL 300. Verify with
+   `dig +short tracker-dev.qoq-dev.xyz` once propagated (~5 min).
+
+3. **Secrets** — run `bash scripts/bootstrap-dev-secrets.sh`, paste the
+   output into `Settings → Secrets and variables → Actions`. Use the
+   `qoq-dev-dev` GitHub environment (create it first, no required
+   reviewers).
+
+4. **TLS cert** — on the server, once DNS resolves:
+   ```bash
+   docker run --rm -it \
+     -v /etc/letsencrypt:/etc/letsencrypt \
+     -v /var/lib/letsencrypt:/var/lib/letsencrypt \
+     -p 80:80 \
+     certbot/certbot certonly --standalone \
+     -d tracker-dev.qoq-dev.xyz \
+     --agree-tos -m yarikhaker@gmail.com --non-interactive
+   ```
+   You'll need to stop the host nginx briefly (or use webroot mode against
+   the existing nginx). Match whatever flow you used for `qoq-dev.xyz`.
+
+5. **Nginx vhost** — copy `nginx/tracker-dev.qoq-dev.xyz.conf` into the
+   nginx container's conf.d, replacing `${DEV_N8N_PATH_SUFFIX}` with the
+   actual suffix value:
+   ```bash
+   sed "s/\${DEV_N8N_PATH_SUFFIX}/<suffix>/g" nginx/tracker-dev.qoq-dev.xyz.conf \
+     | docker exec -i nginx_nginx_1 tee /etc/nginx/conf.d/tracker-dev.qoq-dev.xyz.conf > /dev/null
+   docker exec nginx_nginx_1 nginx -t
+   docker exec nginx_nginx_1 nginx -s reload
+   ```
+   (`sed -i` against a bind-mounted single file breaks the mount — see the
+   prod incident. Pipe through `tee` instead.)
+
+6. **First deploy** — push to `develop` (or `gh workflow run "Deploy to
+   qoq-dev (dev stack)" --ref develop`). The workflow clones into
+   `/opt/time-tracker-dev`, writes `.env`, and brings the stack up.
+
+7. **Seed dev DB from prod** — once the dev stack is healthy:
+   ```bash
+   # On laptop:
+   scp ./backups/tetris_20260522_110024.sql.gz \
+       deploy-target:/opt/time-tracker-dev/backups-dev/
+   # On server:
+   ssh deploy-target
+   cd /opt/time-tracker-dev
+   ./scripts/restore-dev.sh backups-dev/tetris_20260522_110024.sql.gz
+   ```
+   `restore-dev.sh` refuses to run unless `POSTGRES_DB` ends in `_dev` —
+   safety net against running it inside `/opt/time-tracker`.
+
+8. **n8n setup** — visit
+   `https://tracker-dev.qoq-dev.xyz/tetris-n8n-dev-<suffix>/setup`,
+   create owner account, add credentials:
+   - **Tetris Postgres**: host `postgres`, port `5432`, database
+     `time_tracker_dev`, user `time_tracker_dev_app`, password from
+     `DEV_POSTGRES_PASSWORD`, schema `public`.
+   - **Tetris Telegram Bot**: token from `DEV_TELEGRAM_BOT_TOKEN`.
+
+   Import workflow: **Workflows → New → Import from File** →
+   `workflows/time-tracker-main.json` from the `develop` checkout. Wire
+   the two credentials. Activate.
+
+9. **Smoke test** — DM the dev bot a voice message. Expected path
+   through the canvas:
+   `Telegram Trigger → 00 Is Voice? (true) → V1 Get File Path →
+   V2 Download Voice → V3 Whisper Transcribe → V4 Merge Text → 01 …`
+
+## Day-to-day
+
+- Feature work: branch off `develop` (`feature/<thing>`), PR into
+  `develop`. Push to `develop` auto-deploys to dev.
+- Promote to prod: PR `develop` → `main`, merge, then run the prod
+  deploy workflow manually (`workflow_dispatch`).
+- Dev DB is throwaway. Reseed from prod any time via `restore-dev.sh`.
+- Dev backups land in `/opt/time-tracker-dev/backups-dev/` (kept on
+  the host only, not pulled to laptop unless you want them).
+
+## Teardown (if you ever want to nuke dev)
+
+On the server:
+```bash
+cd /opt/time-tracker-dev
+docker compose -f docker-compose.dev.yml down -v   # -v drops the dev volumes
+cd ..
+rm -rf /opt/time-tracker-dev
+docker exec nginx_nginx_1 rm /etc/nginx/conf.d/tracker-dev.qoq-dev.xyz.conf
+docker exec nginx_nginx_1 nginx -s reload
+```
+Prod (`/opt/time-tracker`) is unaffected because every name above is
+distinct.

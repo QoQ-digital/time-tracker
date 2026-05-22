@@ -19,7 +19,11 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-    # No external port: dev postgres is internal-only on tetris_net_dev.
+    # Loopback-only binding so an SSH tunnel from a laptop can reach the
+    # dev DB with a GUI client (DBeaver etc.) for ad-hoc inspection.
+    # Distinct from prod's 5433 mapping.
+    ports:
+      - "127.0.0.1:5434:5432"
 
   n8n:
     image: n8nio/n8n:1.74.0

@@ -20,7 +20,8 @@ untouched while you iterate on `develop`.
 | Postgres volume   | `tetris_postgres_data`              | `tetris_postgres_data_dev`                     |
 | n8n volume        | `tetris_n8n_data`                   | `tetris_n8n_data_dev`                          |
 | n8n host port     | `127.0.0.1:5678`                    | `127.0.0.1:5679`                               |
-| Hostname          | `qoq-dev.xyz`                       | `tracker-dev.qoq-dev.xyz`                      |
+| Hostname          | `tracker.qoq-dev.xyz`               | `tracker-dev.qoq-dev.xyz`                      |
+| Editor URL        | `https://tracker.qoq-dev.xyz/`      | `https://tracker-dev.qoq-dev.xyz/`             |
 | Telegram bot      | `@enotebot` (prod token)            | `@Time_treckerDevBot` (dev token)              |
 | Deploy workflow   | `.github/workflows/deploy.yml`      | `.github/workflows/deploy-dev.yml`             |
 | GH environment    | `qoq-dev`                           | `qoq-dev-dev`                                  |
@@ -45,30 +46,32 @@ shared between prod and dev — they don't need a `DEV_` twin.
    `qoq-dev-dev` GitHub environment (create it first, no required
    reviewers).
 
-4. **TLS cert** — on the server, once DNS resolves:
+4. **TLS cert** — on the server, once DNS resolves. The existing nginx
+   already serves an ACME challenge location from a docker volume, so
+   webroot mode works with zero downtime:
    ```bash
-   docker run --rm -it \
-     -v /etc/letsencrypt:/etc/letsencrypt \
-     -v /var/lib/letsencrypt:/var/lib/letsencrypt \
-     -p 80:80 \
-     certbot/certbot certonly --standalone \
+   docker run --rm \
+     -v nginx_certbot-etc:/etc/letsencrypt \
+     -v nginx_certbot-var:/var/www/certbot \
+     certbot/certbot certonly --webroot -w /var/www/certbot \
      -d tracker-dev.qoq-dev.xyz \
-     --agree-tos -m yarikhaker@gmail.com --non-interactive
+     --agree-tos --no-eff-email \
+     -m yarikhaker@gmail.com --non-interactive
    ```
-   You'll need to stop the host nginx briefly (or use webroot mode against
-   the existing nginx). Match whatever flow you used for `qoq-dev.xyz`.
+   Prereq: the HTTP-only server block for `tracker-dev.qoq-dev.xyz` must
+   already exist in `/srv/nginx/nginx.conf` (see step 5).
 
-5. **Nginx vhost** — copy `nginx/tracker-dev.qoq-dev.xyz.conf` into the
-   nginx container's conf.d, replacing `${DEV_N8N_PATH_SUFFIX}` with the
-   actual suffix value:
+5. **Nginx vhost** — `/srv/nginx/nginx.conf` is a single bind-mounted
+   file; append two server blocks (one HTTP-only for ACME + redirect, one
+   HTTPS for the proxy). Edit the file in place — do NOT use `sed -i` or
+   any tool that creates a new inode, which would break the bind mount.
+   The reference config in `nginx/tracker-dev.qoq-dev.xyz.conf` shows the
+   block shape; the live config also needs `nginx_nginx_1` connected to
+   `tetris_net_dev` so container DNS resolves:
    ```bash
-   sed "s/\${DEV_N8N_PATH_SUFFIX}/<suffix>/g" nginx/tracker-dev.qoq-dev.xyz.conf \
-     | docker exec -i nginx_nginx_1 tee /etc/nginx/conf.d/tracker-dev.qoq-dev.xyz.conf > /dev/null
-   docker exec nginx_nginx_1 nginx -t
-   docker exec nginx_nginx_1 nginx -s reload
+   docker network connect tetris_net_dev nginx_nginx_1
+   docker exec nginx_nginx_1 nginx -t && docker exec nginx_nginx_1 nginx -s reload
    ```
-   (`sed -i` against a bind-mounted single file breaks the mount — see the
-   prod incident. Pipe through `tee` instead.)
 
 6. **First deploy** — push to `develop` (or `gh workflow run "Deploy to
    qoq-dev (dev stack)" --ref develop`). The workflow clones into
@@ -76,20 +79,21 @@ shared between prod and dev — they don't need a `DEV_` twin.
 
 7. **Seed dev DB from prod** — once the dev stack is healthy:
    ```bash
-   # On laptop:
-   scp ./backups/tetris_20260522_110024.sql.gz \
-       deploy-target:/opt/time-tracker-dev/backups-dev/
-   # On server:
-   ssh deploy-target
+   # On the server (avoids transferring the full prod dump — dumps only the
+   # public schema so n8n's own tables stay untouched):
+   docker compose -p time-tracker exec -T postgres pg_dump \
+       -U time_tracker_app --no-owner --no-privileges --schema=public \
+       time_tracker \
+       | gzip > /opt/time-tracker-dev/backups-dev/prod_public_$(date +%Y%m%d_%H%M%S).sql.gz
+
    cd /opt/time-tracker-dev
-   ./scripts/restore-dev.sh backups-dev/tetris_20260522_110024.sql.gz
+   ./scripts/restore-dev.sh backups-dev/prod_public_*.sql.gz
    ```
    `restore-dev.sh` refuses to run unless `POSTGRES_DB` ends in `_dev` —
    safety net against running it inside `/opt/time-tracker`.
 
-8. **n8n setup** — visit
-   `https://tracker-dev.qoq-dev.xyz/tetris-n8n-dev-<suffix>/setup`,
-   create owner account, add credentials:
+8. **n8n setup** — visit `https://tracker-dev.qoq-dev.xyz/setup`, create
+   owner account, add credentials:
    - **Tetris Postgres**: host `postgres`, port `5432`, database
      `time_tracker_dev`, user `time_tracker_dev_app`, password from
      `DEV_POSTGRES_PASSWORD`, schema `public`.
@@ -119,11 +123,13 @@ shared between prod and dev — they don't need a `DEV_` twin.
 On the server:
 ```bash
 cd /opt/time-tracker-dev
-docker compose -f docker-compose.dev.yml down -v   # -v drops the dev volumes
+docker compose -f docker-compose.dev.yml -p time-tracker-dev down -v  # -v drops the dev volumes
 cd ..
 rm -rf /opt/time-tracker-dev
-docker exec nginx_nginx_1 rm /etc/nginx/conf.d/tracker-dev.qoq-dev.xyz.conf
-docker exec nginx_nginx_1 nginx -s reload
+# Remove the two tracker-dev server blocks from /srv/nginx/nginx.conf
+# manually (or restore a pre-dev backup), then reload nginx:
+docker exec nginx_nginx_1 nginx -t && docker exec nginx_nginx_1 nginx -s reload
+docker network disconnect tetris_net_dev nginx_nginx_1 2>/dev/null || true
 ```
 Prod (`/opt/time-tracker`) is unaffected because every name above is
 distinct.

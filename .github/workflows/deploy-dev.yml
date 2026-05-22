@@ -1,0 +1,222 @@
+name: Deploy to qoq-dev (dev stack)
+
+# Auto-deploys on every push to `develop`, plus a manual trigger.
+# Dev is throwaway by design — fast iteration > approval gates here.
+# Prod stays gated by the separate deploy.yml workflow.
+on:
+  push:
+    branches:
+      - develop
+    # Only redeploy when something the dev stack actually consumes changes.
+    # Updates to docs/scripts that don't affect the running image are skipped.
+    paths:
+      - docker-compose.dev.yml
+      - workflows/**
+      - init.sql
+      - .github/workflows/deploy-dev.yml
+  workflow_dispatch:
+    inputs:
+      skip_backup:
+        description: "Skip pre-deploy DB backup (faster, but riskier)"
+        type: boolean
+        default: false
+
+# One dev deploy at a time. Don't cancel in-progress — we want every push
+# to land in order so the final state matches the tip of develop.
+concurrency:
+  group: deploy-qoq-dev-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Separate environment so dev secrets are scoped away from prod.
+    # No required reviewers on this one — solo dev workflow.
+    environment: qoq-dev-dev
+
+    steps:
+      - name: Validate required secrets
+        env:
+          DEPLOY_SSH_KEY:                     ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_HOST:                    ${{ secrets.DEPLOY_SSH_HOST }}
+          DEPLOY_SSH_USER:                    ${{ secrets.DEPLOY_SSH_USER }}
+          DEV_POSTGRES_PASSWORD:              ${{ secrets.DEV_POSTGRES_PASSWORD }}
+          DEV_N8N_ENCRYPTION_KEY:             ${{ secrets.DEV_N8N_ENCRYPTION_KEY }}
+          DEV_N8N_USER_MANAGEMENT_JWT_SECRET: ${{ secrets.DEV_N8N_USER_MANAGEMENT_JWT_SECRET }}
+          DEV_N8N_PATH_SUFFIX:                ${{ secrets.DEV_N8N_PATH_SUFFIX }}
+          DEV_TELEGRAM_BOT_TOKEN:             ${{ secrets.DEV_TELEGRAM_BOT_TOKEN }}
+          AI_API_KEY:                         ${{ secrets.AI_API_KEY }}
+          DEV_AUTHORIZED_TELEGRAM_USER_IDS:   ${{ secrets.DEV_AUTHORIZED_TELEGRAM_USER_IDS }}
+        run: |
+          missing=()
+          for v in DEPLOY_SSH_KEY DEPLOY_SSH_HOST DEPLOY_SSH_USER \
+                   DEV_POSTGRES_PASSWORD DEV_N8N_ENCRYPTION_KEY \
+                   DEV_N8N_USER_MANAGEMENT_JWT_SECRET DEV_N8N_PATH_SUFFIX \
+                   DEV_TELEGRAM_BOT_TOKEN AI_API_KEY \
+                   DEV_AUTHORIZED_TELEGRAM_USER_IDS; do
+            if [ -z "${!v:-}" ]; then
+              missing+=("$v")
+            fi
+          done
+          if [ "${DEV_N8N_PATH_SUFFIX:-}" = "7f3a9c2b" ]; then
+            echo "::error::DEV_N8N_PATH_SUFFIX is still the placeholder from .env.example."
+            echo "::error::Generate a fresh one: 'openssl rand -hex 4', then update the secret."
+            exit 1
+          fi
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::Missing secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_SSH_HOST }}
+          SSH_PORT: ${{ vars.DEPLOY_SSH_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName $SSH_HOST
+            User ${{ secrets.DEPLOY_SSH_USER }}
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Build dev .env locally
+        env:
+          DEV_POSTGRES_PASSWORD:              ${{ secrets.DEV_POSTGRES_PASSWORD }}
+          DEV_N8N_ENCRYPTION_KEY:             ${{ secrets.DEV_N8N_ENCRYPTION_KEY }}
+          DEV_N8N_USER_MANAGEMENT_JWT_SECRET: ${{ secrets.DEV_N8N_USER_MANAGEMENT_JWT_SECRET }}
+          DEV_TELEGRAM_BOT_TOKEN:             ${{ secrets.DEV_TELEGRAM_BOT_TOKEN }}
+          AI_API_KEY:                         ${{ secrets.AI_API_KEY }}
+          DEV_AUTHORIZED_TELEGRAM_USER_IDS:   ${{ secrets.DEV_AUTHORIZED_TELEGRAM_USER_IDS }}
+          DEV_AUTHORIZED_TELEGRAM_CHAT_IDS:   ${{ secrets.DEV_AUTHORIZED_TELEGRAM_CHAT_IDS }}
+          DEV_N8N_PATH_SUFFIX:                ${{ secrets.DEV_N8N_PATH_SUFFIX }}
+        run: |
+          umask 077
+          {
+            # Distinct DB name so the dev stack cannot accidentally hit prod
+            # data even if creds were swapped. App user differs too.
+            echo "POSTGRES_DB=time_tracker_dev"
+            echo "POSTGRES_USER=time_tracker_dev_app"
+            echo "POSTGRES_PASSWORD=${DEV_POSTGRES_PASSWORD}"
+            echo "N8N_ENCRYPTION_KEY=${DEV_N8N_ENCRYPTION_KEY}"
+            echo "N8N_USER_MANAGEMENT_JWT_SECRET=${DEV_N8N_USER_MANAGEMENT_JWT_SECRET}"
+            echo "N8N_HOST=tracker-dev.qoq-dev.xyz"
+            echo "N8N_PROTOCOL=https"
+            echo "N8N_PORT=5678"
+            echo "N8N_PATH=/tetris-n8n-dev-${DEV_N8N_PATH_SUFFIX}/"
+            echo "WEBHOOK_URL=https://tracker-dev.qoq-dev.xyz/tetris-n8n-dev-${DEV_N8N_PATH_SUFFIX}/"
+            echo "N8N_EDITOR_BASE_URL=https://tracker-dev.qoq-dev.xyz/tetris-n8n-dev-${DEV_N8N_PATH_SUFFIX}/"
+            echo "GENERIC_TIMEZONE=Europe/Warsaw"
+            echo "TZ=Europe/Warsaw"
+            echo "TELEGRAM_BOT_TOKEN=${DEV_TELEGRAM_BOT_TOKEN}"
+            echo "AI_API_KEY=${AI_API_KEY}"
+            echo "AI_MODEL=gpt-4o-mini"
+            echo "AI_API_URL=https://api.openai.com/v1/chat/completions"
+            echo "AI_CONFIDENCE_THRESHOLD=0.80"
+            echo "AUTHORIZED_TELEGRAM_USER_IDS=${DEV_AUTHORIZED_TELEGRAM_USER_IDS}"
+            echo "AUTHORIZED_TELEGRAM_CHAT_IDS=${DEV_AUTHORIZED_TELEGRAM_CHAT_IDS}"
+            echo "MAX_ACTIVE_EXAMPLES_PER_CATEGORY=30"
+            echo "DASHBOARD_DEFAULT_MODE=compact"
+            echo "DASHBOARD_MAX_CATEGORIES=8"
+          } > /tmp/time-tracker-dev.env
+
+      - name: Upload .env to server
+        run: |
+          scp /tmp/time-tracker-dev.env deploy-target:/tmp/time-tracker-dev.env.new
+          shred -u /tmp/time-tracker-dev.env
+
+      - name: Deploy dev stack on server
+        env:
+          SKIP_BACKUP: ${{ inputs.skip_backup || 'false' }}
+          DEV_N8N_PATH_SUFFIX: ${{ secrets.DEV_N8N_PATH_SUFFIX }}
+        run: |
+          ssh deploy-target \
+              "SKIP_BACKUP='${SKIP_BACKUP}' DEV_N8N_PATH_SUFFIX='${DEV_N8N_PATH_SUFFIX}' bash -se" <<'REMOTE'
+          set -euo pipefail
+
+          DEPLOY_DIR=/opt/time-tracker-dev
+          REPO=https://github.com/QoQ-digital/time-tracker.git
+          mkdir -p "$(dirname "$DEPLOY_DIR")"
+
+          if [ ! -d "$DEPLOY_DIR/.git" ]; then
+            echo "[deploy-dev] First-time clone into $DEPLOY_DIR"
+            git clone --depth=1 --branch develop "$REPO" "$DEPLOY_DIR"
+          else
+            echo "[deploy-dev] Updating existing checkout (develop branch)"
+            cd "$DEPLOY_DIR"
+            git fetch --depth=1 origin develop
+            git reset --hard origin/develop
+          fi
+
+          cd "$DEPLOY_DIR"
+          install -m 600 /tmp/time-tracker-dev.env.new .env
+          rm -f /tmp/time-tracker-dev.env.new
+
+          # Compose project name distinct from prod so the two stacks never
+          # collide on container/volume/network resolution.
+          export COMPOSE_PROJECT_NAME=time-tracker-dev
+
+          if [ "$SKIP_BACKUP" != "true" ] \
+             && docker compose -f docker-compose.dev.yml ps --status running --services 2>/dev/null | grep -qx postgres; then
+            echo "[deploy-dev] Pre-deploy DB backup"
+            ./scripts/backup-dev.sh || echo "[deploy-dev] backup failed (non-fatal, continuing)"
+          fi
+
+          echo "[deploy-dev] Pulling images"
+          docker compose -f docker-compose.dev.yml pull
+
+          echo "[deploy-dev] Bringing up the dev stack"
+          docker compose -f docker-compose.dev.yml up -d --remove-orphans
+
+          sleep 3
+          docker compose -f docker-compose.dev.yml ps
+
+          echo
+          echo "================================================================"
+          echo " Dev deploy complete."
+          echo " Editor:  https://tracker-dev.qoq-dev.xyz/tetris-n8n-dev-${DEV_N8N_PATH_SUFFIX}/"
+          echo " Webhook: https://tracker-dev.qoq-dev.xyz/tetris-n8n-dev-${DEV_N8N_PATH_SUFFIX}/webhook/"
+          echo "================================================================"
+          echo
+          echo " If this is the FIRST dev deploy, paste this nginx server block"
+          echo " into /srv/nginx/conf.d/ and reload nginx (see nginx-tracker-dev.conf):"
+          echo
+          cat <<NGINX
+          # tracker-dev.qoq-dev.xyz — n8n dev stack on 127.0.0.1:5679
+          server {
+              listen 443 ssl http2;
+              server_name tracker-dev.qoq-dev.xyz;
+
+              ssl_certificate     /etc/letsencrypt/live/tracker-dev.qoq-dev.xyz/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/tracker-dev.qoq-dev.xyz/privkey.pem;
+
+              location /tetris-n8n-dev-${DEV_N8N_PATH_SUFFIX}/ {
+                  proxy_pass http://127.0.0.1:5679;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade           \$http_upgrade;
+                  proxy_set_header Connection        "upgrade";
+                  proxy_set_header Host              \$host;
+                  proxy_set_header X-Real-IP         \$remote_addr;
+                  proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto \$scheme;
+                  proxy_set_header X-Forwarded-Host  \$host;
+                  proxy_buffering        off;
+                  proxy_cache            off;
+                  proxy_read_timeout     86400;
+                  proxy_send_timeout     86400;
+                  chunked_transfer_encoding off;
+                  client_max_body_size   50M;
+              }
+          }
+          NGINX
+          REMOTE

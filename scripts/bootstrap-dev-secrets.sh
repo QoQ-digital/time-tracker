@@ -14,7 +14,6 @@ set -euo pipefail
 DEV_POSTGRES_PASSWORD=$(openssl rand -hex 24)
 DEV_N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)
 DEV_N8N_USER_MANAGEMENT_JWT_SECRET=$(openssl rand -hex 32)
-DEV_N8N_PATH_SUFFIX=$(openssl rand -hex 4)
 
 cat <<EOF
 
@@ -30,7 +29,6 @@ Secret name                              Value
 DEV_POSTGRES_PASSWORD                    $DEV_POSTGRES_PASSWORD
 DEV_N8N_ENCRYPTION_KEY                   $DEV_N8N_ENCRYPTION_KEY
 DEV_N8N_USER_MANAGEMENT_JWT_SECRET       $DEV_N8N_USER_MANAGEMENT_JWT_SECRET
-DEV_N8N_PATH_SUFFIX                      $DEV_N8N_PATH_SUFFIX
 
 DEV_TELEGRAM_BOT_TOKEN                   <from @BotFather for @Time_treckerDevBot>
 DEV_AUTHORIZED_TELEGRAM_USER_IDS         <numeric, comma-separated>
@@ -46,6 +44,6 @@ on the next push to 'develop'. To trigger it manually now:
   gh workflow run "Deploy to qoq-dev (dev stack)" --ref develop
 
 Editor URL after first deploy:
-  https://tracker-dev.qoq-dev.xyz/tetris-n8n-dev-${DEV_N8N_PATH_SUFFIX}/
+  https://tracker-dev.qoq-dev.xyz/
 =================================================================
 EOF

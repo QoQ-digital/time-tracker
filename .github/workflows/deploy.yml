@@ -34,7 +34,6 @@ jobs:
           POSTGRES_PASSWORD:              ${{ secrets.POSTGRES_PASSWORD }}
           N8N_ENCRYPTION_KEY:             ${{ secrets.N8N_ENCRYPTION_KEY }}
           N8N_USER_MANAGEMENT_JWT_SECRET: ${{ secrets.N8N_USER_MANAGEMENT_JWT_SECRET }}
-          N8N_PATH_SUFFIX:                ${{ secrets.N8N_PATH_SUFFIX }}
           TELEGRAM_BOT_TOKEN:             ${{ secrets.TELEGRAM_BOT_TOKEN }}
           AI_API_KEY:                     ${{ secrets.AI_API_KEY }}
           AUTHORIZED_TELEGRAM_USER_IDS:   ${{ secrets.AUTHORIZED_TELEGRAM_USER_IDS }}
@@ -42,7 +41,7 @@ jobs:
           missing=()
           for v in DEPLOY_SSH_KEY DEPLOY_SSH_HOST DEPLOY_SSH_USER \
                    POSTGRES_PASSWORD N8N_ENCRYPTION_KEY \
-                   N8N_USER_MANAGEMENT_JWT_SECRET N8N_PATH_SUFFIX \
+                   N8N_USER_MANAGEMENT_JWT_SECRET \
                    TELEGRAM_BOT_TOKEN AI_API_KEY \
                    AUTHORIZED_TELEGRAM_USER_IDS; do
             # Indirect expansion: ${!v} = value of env var named ${v}.
@@ -50,11 +49,6 @@ jobs:
               missing+=("$v")
             fi
           done
-          if [ "${N8N_PATH_SUFFIX:-}" = "7f3a9c2b" ]; then
-            echo "::error::N8N_PATH_SUFFIX is still the placeholder from .env.example."
-            echo "::error::Generate a fresh one: 'openssl rand -hex 4', then update the secret."
-            exit 1
-          fi
           if [ "${#missing[@]}" -ne 0 ]; then
             echo "::error::Missing secrets: ${missing[*]}"
             exit 1
@@ -91,24 +85,29 @@ jobs:
           AI_API_KEY: ${{ secrets.AI_API_KEY }}
           AUTHORIZED_TELEGRAM_USER_IDS: ${{ secrets.AUTHORIZED_TELEGRAM_USER_IDS }}
           AUTHORIZED_TELEGRAM_CHAT_IDS: ${{ secrets.AUTHORIZED_TELEGRAM_CHAT_IDS }}
-          N8N_PATH_SUFFIX: ${{ secrets.N8N_PATH_SUFFIX }}
         run: |
           umask 077
           # Build the file in a way that does NOT echo secrets to logs.
           # GitHub auto-masks secret values in logs anyway, but `set -x` here
           # would print quoted strings of literal '***', so we keep it off.
+          #
+          # Host/path note: live prod runs at https://tracker.qoq-dev.xyz/
+          # (no path-suffix). The earlier `qoq-dev.xyz/tetris-n8n-<suffix>/`
+          # scheme was never actually wired up in the nginx in front, and
+          # the live .env on the server has been hand-edited to the values
+          # below for weeks. This step now writes that reality.
           {
             echo "POSTGRES_DB=time_tracker"
             echo "POSTGRES_USER=time_tracker_app"
             echo "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}"
             echo "N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}"
             echo "N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET}"
-            echo "N8N_HOST=qoq-dev.xyz"
+            echo "N8N_HOST=tracker.qoq-dev.xyz"
             echo "N8N_PROTOCOL=https"
             echo "N8N_PORT=5678"
-            echo "N8N_PATH=/tetris-n8n-${N8N_PATH_SUFFIX}/"
-            echo "WEBHOOK_URL=https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/"
-            echo "N8N_EDITOR_BASE_URL=https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/"
+            echo "N8N_PATH=/"
+            echo "WEBHOOK_URL=https://tracker.qoq-dev.xyz/"
+            echo "N8N_EDITOR_BASE_URL=https://tracker.qoq-dev.xyz/"
             echo "GENERIC_TIMEZONE=Europe/Warsaw"
             echo "TZ=Europe/Warsaw"
             echo "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}"
@@ -131,12 +130,11 @@ jobs:
       - name: Deploy on server
         env:
           SKIP_BACKUP: ${{ inputs.skip_backup }}
-          N8N_PATH_SUFFIX: ${{ secrets.N8N_PATH_SUFFIX }}
         run: |
           # The remote heredoc is single-quoted so the only thing the host
           # shell substitutes is what we explicitly export below.
           ssh deploy-target \
-              "SKIP_BACKUP='${SKIP_BACKUP}' N8N_PATH_SUFFIX='${N8N_PATH_SUFFIX}' bash -se" <<'REMOTE'
+              "SKIP_BACKUP='${SKIP_BACKUP}' bash -se" <<'REMOTE'
           set -euo pipefail
 
           DEPLOY_DIR=/opt/time-tracker
@@ -176,30 +174,7 @@ jobs:
           echo
           echo "================================================================"
           echo " Deploy complete."
-          echo " Editor:  https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/"
-          echo " Webhook: https://qoq-dev.xyz/tetris-n8n-${N8N_PATH_SUFFIX}/webhook/"
+          echo " Editor:  https://tracker.qoq-dev.xyz/"
+          echo " Webhook: https://tracker.qoq-dev.xyz/webhook/"
           echo "================================================================"
-          echo
-          echo " If this is the FIRST deploy, paste this nginx location block"
-          echo " inside your existing qoq-dev.xyz server { ... } and reload nginx:"
-          echo
-          cat <<NGINX
-          location /tetris-n8n-${N8N_PATH_SUFFIX}/ {
-              proxy_pass http://127.0.0.1:5678;
-              proxy_http_version 1.1;
-              proxy_set_header Upgrade           \$http_upgrade;
-              proxy_set_header Connection        "upgrade";
-              proxy_set_header Host              \$host;
-              proxy_set_header X-Real-IP         \$remote_addr;
-              proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto \$scheme;
-              proxy_set_header X-Forwarded-Host  \$host;
-              proxy_buffering        off;
-              proxy_cache            off;
-              proxy_read_timeout     86400;
-              proxy_send_timeout     86400;
-              chunked_transfer_encoding off;
-              client_max_body_size   50M;
-          }
-          NGINX
           REMOTE

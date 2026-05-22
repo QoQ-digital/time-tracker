@@ -57,7 +57,6 @@ fi
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)
 N8N_USER_MANAGEMENT_JWT_SECRET=$(openssl rand -hex 32)
-N8N_PATH_SUFFIX=$(openssl rand -hex 4)
 
 cat <<EOF
 
@@ -75,10 +74,9 @@ DEPLOY_SSH_USER                      <e.g. root>
 POSTGRES_PASSWORD                    $POSTGRES_PASSWORD
 N8N_ENCRYPTION_KEY                   $N8N_ENCRYPTION_KEY
 N8N_USER_MANAGEMENT_JWT_SECRET       $N8N_USER_MANAGEMENT_JWT_SECRET
-N8N_PATH_SUFFIX                      $N8N_PATH_SUFFIX
 
 TELEGRAM_BOT_TOKEN                   <from @BotFather>
-AI_API_KEY                           <from https://console.anthropic.com>
+AI_API_KEY                           <from https://platform.openai.com/api-keys>
 AUTHORIZED_TELEGRAM_USER_IDS         <numeric, comma-separated; from @userinfobot>
 AUTHORIZED_TELEGRAM_CHAT_IDS         <numeric, comma-separated; optional>
 

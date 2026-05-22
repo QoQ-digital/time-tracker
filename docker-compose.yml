@@ -19,9 +19,11 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
-    # No ports section: postgres is reachable only via the internal docker network.
-    # If you ever need external access, expose ONLY on 127.0.0.1 with a firewall rule
-    # in front and a strong password — never bind 0.0.0.0:5432.
+    # Loopback-only binding so ops can SSH-tunnel and connect with a GUI
+    # client (e.g. DBeaver) without exposing postgres on the public IP.
+    # Strong password is still required — never bind 0.0.0.0.
+    ports:
+      - "127.0.0.1:5433:5432"
 
   n8n:
     image: n8nio/n8n:1.74.0

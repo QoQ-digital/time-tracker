@@ -1,0 +1,61 @@
+STAGE 1 — мелкие правки для нод 09, 10, 14, 16.
+Полные тела нод 01 / 11 / 18 лежат рядом отдельными файлами.
+
+================================================================
+NODE 09 «Process AI Response» (code)
+================================================================
+В финальном цикле нормализации слотов:
+
+  1) Строку  `if (!s.slot_date) s.slot_date = ctx.todayDate;`
+     заменить на:
+        if (!s.slot_date) s.slot_date = ctx.logDate || ctx.todayDate;
+
+  2) В КОНЕЦ тела цикла (после `s.duration_minutes = parseInt(...) || 0;`)
+     добавить RX-guard (Bug 3 — рефлексия всегда 0 мин):
+
+        // Рефлексия не занимает время, что бы ни вернул AI.
+        if (s.category_code === 'RX') {
+          s.start_time = null;
+          s.end_time = null;
+          s.duration_minutes = 0;
+        }
+
+================================================================
+NODE 10 «Find Last Slot End» (postgres)  — Bug 2
+================================================================
+ЗАМЕНИТЬ весь Query на (убран сломанный на полночи фильтр end_time<=NOW):
+
+  SELECT MAX(end_time) AS last_end
+  FROM time_slots
+  WHERE slot_date = $1::date
+    AND status = 'confirmed'
+    AND end_time IS NOT NULL;
+
+И в Options → Query Replacement (queryReplacement) поменять на logDate,
+чтобы при «вч» якорь брался из вчерашнего дня:
+
+  ={{ $json.logDate || $json.todayDate }}
+
+================================================================
+NODE 14 «Build Save SQL» (code)  — Bug 1 (бэкдейт батча)
+================================================================
+В объекте payload строку:
+        date: ctx.todayDate,
+заменить на:
+        date: ctx.logDate || ctx.todayDate,
+
+================================================================
+NODE 16 «Aggregate Totals + Goals» (postgres)  — фича «залогировано до»
+================================================================
+Перед финальной `;` (после блока goal_weekly) ДОБАВИТЬ ветку UNION ALL.
+Она возвращает максимальный end_time за сегодня как «минуты от полуночи».
+
+  UNION ALL
+  SELECT 'day_frontier' AS kind, NULL::text AS category_code, NULL::text AS category_name,
+         COALESCE(EXTRACT(EPOCH FROM MAX(end_time))::int / 60, 0) AS total_minutes,
+         NULL::date AS period_start, NULL::date AS period_end
+  FROM time_slots
+  WHERE status = 'confirmed' AND slot_date = $1::date AND end_time IS NOT NULL
+
+(queryReplacement у ноды 16 НЕ трогаем — остаётся todayDate,
+ дашборд по-прежнему показывает «сегодня».)

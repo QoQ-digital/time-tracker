@@ -1,0 +1,2 @@
+# Generated artifact — regenerated from node*.js + patch_*.py at deploy time.
+*.PATCHED.json

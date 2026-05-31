@@ -203,12 +203,21 @@ if (pt) {
   } }];
 }
 
-const explicit = parseExplicitRange(bodyText, logDate);
-if (explicit) {
-  return [{ json: { ...base, ...editLookup, logDate, text: bodyText, action: 'save_explicit', slots: [explicit] } }];
+// Голое ведущее число = ДЛИТЕЛЬНОСТЬ в минутах: "20 Емилия букет" → "20 мин Емилия букет",
+// чтобы AI не прочитал "20" как время 20:00. Время указывается только HH:MM / HHMM / "до HH:MM".
+// Пропускаем, если уже есть единица (мин/час) или дальше идёт число/двоеточие/диапазон.
+let parseText = bodyText;
+const bare = /^(\d{1,3})\s+(.+)$/.exec(bodyText);
+if (bare && !/^(\d|мин|минут|м\s|час|часа|часов|ч\s)/i.test(bare[2])) {
+  parseText = `${bare[1]} мин ${bare[2]}`;
 }
 
-return [{ json: { ...base, ...editLookup, logDate, text: bodyText, action: 'ai_classify' } }];
+const explicit = parseExplicitRange(parseText, logDate);
+if (explicit) {
+  return [{ json: { ...base, ...editLookup, logDate, text: parseText, action: 'save_explicit', slots: [explicit] } }];
+}
+
+return [{ json: { ...base, ...editLookup, logDate, text: parseText, action: 'ai_classify' } }];
 
 // ---------------------------------------------------------------------
 // Helpers (function declarations are hoisted, so usable above).

@@ -31,8 +31,9 @@ function nowHHMM() {
 
 let cursor = toMinutes(lastEnd);
 let anchorMissing = false;
-let anchorAt = null;   // конец последней записи дня, если «до X» упёрлось в него
-let badEnd = null;     // запрошенное время, оказавшееся раньше конца дня
+let anchorAt = null;    // конец последней записи дня, если «до X» упёрлось в него
+let badEnd = null;      // запрошенное время, давшее подозрительный разрыв
+let anchorRolled = false; // true = «до X» РАНЬШЕ конца дня (через полночь); false = разрыв вперёд >8ч
 
 for (const s of ctx.slots) {
   // RX reflection — always a 0-min marker, never consumes the cursor.
@@ -64,8 +65,10 @@ for (const s of ctx.slots) {
     if (endMin === null) continue;
     let adjustedEnd = endMin;
     if (endMin <= cursor) adjustedEnd = endMin + 24 * 60;   // через полночь
-    if (adjustedEnd - cursor > 8 * 60) {                   // >8ч: «до X» раньше конца дня
-      anchorMissing = true; anchorAt = cursor; badEnd = s.end_time; continue;
+    if (adjustedEnd - cursor > 8 * 60) {                   // >8ч — подозрительный разрыв
+      anchorMissing = true; anchorAt = cursor; badEnd = s.end_time;
+      anchorRolled = (endMin <= cursor);                   // раньше конца дня (полночь) vs разрыв вперёд
+      continue;
     }
     s.start_time = fromMinutes(cursor);
     s.duration_minutes = adjustedEnd - cursor;
@@ -85,12 +88,18 @@ for (const s of ctx.slots) {
 // If a "до"/duration slot couldn't be anchored, ask instead of saving 0 minutes.
 if (anchorMissing) {
   ctx.needsClarification = true;
-  if (anchorAt !== null) {
-    // «до X» оказалось раньше уже залогированного конца дня
+  if (anchorAt !== null && anchorRolled) {
+    // «до X» оказалось раньше уже залогированного конца дня (трактуется как полночь)
     ctx.clarificationText =
       `Последняя запись за этот день — до ${fromMinutes(anchorAt)}, ` +
       `а «${badEnd}» раньше неё — слот не посчитать. ` +
       `Пришли диапазон HH:MM-HH:MM, либо проверь время.`;
+  } else if (anchorAt !== null) {
+    // разрыв вперёд >8ч — скорее всего число приняли за время (напр. «20» = 20:00)
+    ctx.clarificationText =
+      `От последней записи (до ${fromMinutes(anchorAt)}) до «${badEnd}» больше 8 часов — ` +
+      `не похоже на один слот. Если это длительность — добавь «мин» (напр. «20 мин ...»); ` +
+      `если время — пришли диапазон HH:MM-HH:MM.`;
   } else {
     // нет ни одной записи за день, не от чего считать
     ctx.clarificationText =

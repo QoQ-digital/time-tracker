@@ -18,8 +18,11 @@ wf = doc[0] if isinstance(doc, list) else doc
 nodes = {n["name"]: n for n in wf["nodes"]}
 changed = []
 
-# --- nodes 01 & 18: full body (idempotent) — detectPoint wake-in-"^" + dashboard marker label ---
+# --- nodes 01 / 14 / 18: full body (idempotent) ---
+#   01 = bare-number→minutes + detectPoint wake-in-"^"; 14 = Stage-2 sleep CTE;
+#   18 = dashboard marker label + 😴 sleep line.
 for name, fname in [("01 Parse + Authorize + Plan", "node01_parse.js"),
+                    ("14 Build Save SQL", "node14_build_save.js"),
                     ("18 Format Dashboard", "node18_format_dashboard.js")]:
     body = (STAGE1 / fname).read_text()
     if nodes[name]["parameters"].get("jsCode") != body:

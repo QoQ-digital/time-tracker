@@ -77,6 +77,13 @@ if (frontierMin !== null && frontierMin > 0) {
   lines.push('');
 }
 
+// Stage-2: approx sleep shown separately (not among waking categories).
+const sleepMin = todayTotals.get('SLEEP') || 0;
+if (sleepMin > 0) {
+  lines.push(`😴 Сон: ${fmtH(sleepMin)}`);
+  lines.push('');
+}
+
 if (weeklyGoals.size > 0) {
   lines.push('Недельные цели:');
   for (const [code, goal] of weeklyGoals) {
@@ -107,6 +114,7 @@ const maxCats = parseInt($env.DASHBOARD_MAX_CATEGORIES || '8', 10);
 const rest = [];
 for (const [code, mins] of todayTotals) {
   if (mins <= 0) continue;
+  if (code === 'SLEEP') continue;                      // показан отдельной строкой 😴
   if (dailyGoals.has(code) || weeklyGoals.has(code)) continue;
   rest.push([code, mins]);
 }

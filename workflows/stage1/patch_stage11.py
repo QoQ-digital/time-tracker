@@ -43,6 +43,30 @@ elif STAGE1_LINE in js09:
 else:
     sys.exit("[node 09] не найден ожидаемый Stage-1 фрагмент slot_date — стоп (дрейф?)")
 
+# --- node 10: exclude the batch being EDITED from the anchor (edit-anchor fix) ---
+#   Без этого правка «до X» упирается в собственную старую (ещё confirmed) версию
+#   → endMin == frontier → ложный «через полночь» → отказ. $2 = lookup_message_id.
+NEW_Q10 = (
+    "-- Last confirmed slot end for the date.\n"
+    "-- Stage-1: no time-of-day filter. Stage-1.4: exclude the batch being edited\n"
+    "-- ($2 = lookup_message_id) so editing a \"до X\" re-anchors to the PREVIOUS slot.\n"
+    "SELECT MAX(s.end_time) AS last_end\n"
+    "FROM time_slots s\n"
+    "JOIN time_message_batches b ON b.id = s.batch_id\n"
+    "WHERE s.slot_date = $1::date\n"
+    "  AND s.status = 'confirmed'\n"
+    "  AND s.end_time IS NOT NULL\n"
+    "  AND ($2 = '' OR b.telegram_message_id IS DISTINCT FROM $2);"
+)
+n10 = nodes["10 Find Last Slot End"]["parameters"]
+if n10.get("query") != NEW_Q10:
+    n10["query"] = NEW_Q10
+    n10.setdefault("options", {})["queryReplacement"] = \
+        "={{ $json.logDate || $json.todayDate }}, {{ $json.lookup_message_id || '' }}"
+    changed.append("10 Find Last Slot End")
+else:
+    print("= node 10 уже актуальна — пропускаю")
+
 # --- node 11: full body (idempotent) ---
 new11 = (STAGE1 / "node11_backfill.js").read_text()
 if nodes["11 Backfill Times"]["parameters"].get("jsCode") != new11:

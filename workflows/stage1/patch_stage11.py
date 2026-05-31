@@ -67,6 +67,20 @@ if n10.get("query") != NEW_Q10:
 else:
     print("= node 10 уже актуальна — пропускаю")
 
+# --- node 16: "Залогировано до" (day_frontier) excludes 0-dur markers — Stage-1.5 ---
+#   RX/пробуждение/^ имеют end_time=сейчас, но duration=0 → не должны двигать фронтир.
+#   Считаем MAX(end_time) только по слотам с реальной длительностью (>0).
+q16 = nodes["16 Aggregate Totals + Goals"]["parameters"]["query"]
+FW = "WHERE status = 'confirmed' AND slot_date = $1::date AND end_time IS NOT NULL"
+FW_FIX = FW + "\n  AND duration_minutes > 0"
+if FW_FIX in q16:
+    print("= node 16 frontier уже актуальна — пропускаю")
+elif "day_frontier" in q16 and FW in q16:
+    nodes["16 Aggregate Totals + Goals"]["parameters"]["query"] = q16.replace(FW, FW_FIX, 1)
+    changed.append("16 Aggregate Totals + Goals")
+else:
+    print("⚠ node 16: блок day_frontier не найден — проверь вручную (не критично)")
+
 # --- node 11: full body (idempotent) ---
 new11 = (STAGE1 / "node11_backfill.js").read_text()
 if nodes["11 Backfill Times"]["parameters"].get("jsCode") != new11:

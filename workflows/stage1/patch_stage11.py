@@ -43,26 +43,23 @@ elif STAGE1_LINE in js09:
 else:
     sys.exit("[node 09] не найден ожидаемый Stage-1 фрагмент slot_date — стоп (дрейф?)")
 
-# --- node 10: exclude the batch being EDITED from the anchor (edit-anchor fix) ---
-#   Без этого правка «до X» упирается в собственную старую (ещё confirmed) версию
-#   → endMin == frontier → ложный «через полночь» → отказ. $2 = lookup_message_id.
+# --- node 10: single-param anchor (Stage-1.5.1 ROLLBACK) ---
+#   Stage-1.4 пытался исключать редактируемый batch через $2, но n8n НЕ разбивает
+#   queryReplacement "={{a}}, {{b}}" на два параметра (весь =-expr = один $1) →
+#   "there is no parameter $2" → нода 10 падала на КАЖДОМ сообщении → бот молчал.
+#   Откат на один параметр ($1 = logDate). Edit-anchor фикс вернём с корректным синтаксисом.
 NEW_Q10 = (
-    "-- Last confirmed slot end for the date.\n"
-    "-- Stage-1: no time-of-day filter. Stage-1.4: exclude the batch being edited\n"
-    "-- ($2 = lookup_message_id) so editing a \"до X\" re-anchors to the PREVIOUS slot.\n"
-    "SELECT MAX(s.end_time) AS last_end\n"
-    "FROM time_slots s\n"
-    "JOIN time_message_batches b ON b.id = s.batch_id\n"
-    "WHERE s.slot_date = $1::date\n"
-    "  AND s.status = 'confirmed'\n"
-    "  AND s.end_time IS NOT NULL\n"
-    "  AND ($2 = '' OR b.telegram_message_id IS DISTINCT FROM $2);"
+    "-- Last confirmed slot end for the date (Stage-1: no time-of-day filter).\n"
+    "SELECT MAX(end_time) AS last_end\n"
+    "FROM time_slots\n"
+    "WHERE slot_date = $1::date\n"
+    "  AND status = 'confirmed'\n"
+    "  AND end_time IS NOT NULL;"
 )
 n10 = nodes["10 Find Last Slot End"]["parameters"]
-if n10.get("query") != NEW_Q10:
+if n10.get("query") != NEW_Q10 or "lookup_message_id" in n10.get("options", {}).get("queryReplacement", ""):
     n10["query"] = NEW_Q10
-    n10.setdefault("options", {})["queryReplacement"] = \
-        "={{ $json.logDate || $json.todayDate }}, {{ $json.lookup_message_id || '' }}"
+    n10.setdefault("options", {})["queryReplacement"] = "={{ $json.logDate || $json.todayDate }}"
     changed.append("10 Find Last Slot End")
 else:
     print("= node 10 уже актуальна — пропускаю")
